@@ -164,8 +164,20 @@ cargo test --workspace
 cargo clippy --workspace --all-targets
 ```
 
-On Windows the MSVC toolchain needs the Visual Studio C++ build tools for its
-linker; the GNU toolchain works with any MinGW-w64 install.
+On Windows, the default MSVC toolchain needs two Visual Studio components for
+its linker. Installing the IDE alone is not enough:
+
+```powershell
+& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe" modify `
+  --installPath "C:\Program Files\Microsoft Visual Studio\18\Community" `
+  --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+  --add Microsoft.VisualStudio.Component.Windows11SDK.26100 `
+  --quiet --norestart
+```
+
+Build from PowerShell rather than Git Bash: Git for Windows ships its own
+`/usr/bin/link.exe`, which shadows the MSVC linker and produces confusing
+`extra operand` errors.
 
 ## Layout
 
