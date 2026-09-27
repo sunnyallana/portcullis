@@ -256,12 +256,25 @@ pub struct WriteQuery<'a> {
     pub row_filter: Option<&'a Expr>,
 }
 
+/// A write statement, and the values it puts in the row.
+///
+/// The values travel out because a backend without `RETURNING` has to find
+/// the row again afterwards, and re-resolving the terms would generate a
+/// different `uuid()` or `now()` the second time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WriteStatement {
+    /// The statement to run.
+    pub statement: Statement,
+    /// Column values as resolved, in declaration order.
+    pub values: IndexMap<String, Value>,
+}
+
 /// Build a write statement.
 #[allow(
     clippy::too_many_lines,
     reason = "one statement shape per write mode; the modes read better together"
 )]
-pub fn write(q: &WriteQuery, dialect: &dyn Dialect, binder: &mut Binder) -> Result<Statement> {
+pub fn write(q: &WriteQuery, dialect: &dyn Dialect, binder: &mut Binder) -> Result<WriteStatement> {
     let table = dialect.quote(q.table)?;
 
     // Values the row filter pins down. An insert has no WHERE clause to put
@@ -372,9 +385,12 @@ pub fn write(q: &WriteQuery, dialect: &dyn Dialect, binder: &mut Binder) -> Resu
         sql.push_str(&cols);
     }
 
-    Ok(Statement {
-        sql,
-        binds: std::mem::take(&mut binder.binds),
+    Ok(WriteStatement {
+        statement: Statement {
+            sql,
+            binds: std::mem::take(&mut binder.binds),
+        },
+        values: resolved,
     })
 }
 
@@ -542,7 +558,7 @@ mod tests {
         let a = args(&[("order_no", Value::Text("8812".into()))]);
         let c = caller();
         let mut b = Binder::new(&a, &c);
-        let stmt = write(
+        let written = write(
             &WriteQuery {
                 table: "refunds",
                 mode: WriteMode::Insert,
@@ -555,6 +571,7 @@ mod tests {
             &mut b,
         )
         .unwrap();
+        let stmt = written.statement;
         // The spec said US; the caller's scope says EU, and the scope wins.
         assert_eq!(stmt.binds[1], Value::Text("EU".into()));
         assert!(
@@ -576,7 +593,7 @@ mod tests {
         ]);
         let c = caller();
         let mut b = Binder::new(&a, &c);
-        let stmt = write(
+        let written = write(
             &WriteQuery {
                 table: "orders",
                 mode: WriteMode::Update,
@@ -589,6 +606,7 @@ mod tests {
             &mut b,
         )
         .unwrap();
+        let stmt = written.statement;
         assert_eq!(
             stmt.sql,
             "UPDATE \"orders\" SET \"status\" = $1 WHERE \"order_no\" = $2 AND \"region\" = $3"
@@ -603,7 +621,7 @@ mod tests {
         let a = args(&[("id", Value::Int(1)), ("note", Value::Text("hi".into()))]);
         let c = caller();
         let mut b = Binder::new(&a, &c);
-        let stmt = write(
+        let written = write(
             &WriteQuery {
                 table: "notes",
                 mode: WriteMode::Upsert,
@@ -616,6 +634,7 @@ mod tests {
             &mut b,
         )
         .unwrap();
+        let stmt = written.statement;
         assert!(
             stmt.sql
                 .contains("ON CONFLICT (\"id\") DO UPDATE SET \"note\" = EXCLUDED.\"note\""),

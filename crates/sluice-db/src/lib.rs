@@ -1,11 +1,13 @@
 //! Database backends.
 //!
 //! A backend owns its connections, reports the live schema and executes plans.
-//! Two ship with Sluice: PostgreSQL over a pooled connection, and an in-memory
-//! backend used by the test suite and by `sluice demo` so that the product can
-//! be tried without provisioning anything.
+//! Three ship with Sluice: PostgreSQL and MySQL over pooled connections, and
+//! an in-memory backend used by the test suite and by `sluice init` so the
+//! product can be tried without provisioning anything.
 
 pub mod memory;
+#[cfg(feature = "mysql")]
+pub mod mysql;
 pub mod plan;
 #[cfg(feature = "postgres")]
 pub mod postgres;
@@ -16,6 +18,8 @@ use async_trait::async_trait;
 use sluice_core::{Result, Schema};
 
 pub use memory::MemoryBackend;
+#[cfg(feature = "mysql")]
+pub use mysql::MySqlBackend;
 pub use plan::{ExecCtx, ReadPlan, Rows, WriteOutcome, WritePlan};
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresBackend;

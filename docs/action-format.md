@@ -29,16 +29,24 @@ statement_timeout_secs = 60
 
 | Key | Applies to | Meaning |
 |---|---|---|
-| `kind` | both | `"postgres"` or `"memory"` |
-| `dsn` | postgres | libpq connection string. Use `env:NAME` or `file:/path` |
-| `schemas` | postgres | Schemas to expose. Empty means every non-system schema |
-| `max_connections`, `min_connections` | postgres | Pool bounds |
-| `statement_timeout_secs` | postgres | Server-side backstop on every connection |
+| `kind` | both | `"postgres"`, `"mysql"` or `"memory"` |
+| `dsn` | postgres, mysql | Connection string. Use `env:NAME` or `file:/path` |
+| `schemas` | postgres, mysql | Schemas (MySQL: databases) to expose. Empty means every non-system schema, or the one in the connection string |
+| `max_connections`, `min_connections` | postgres, mysql | Pool bounds |
+| `statement_timeout_secs` | postgres, mysql | Server-side backstop on every connection |
 | `fixtures` | memory | Path to a JSON fixture (demo and tests only) |
 
-Columns whose PostgreSQL type Sluice does not model — arrays, ranges,
-`tsvector`, custom types — are left out of the schema. An action that names one
-fails validation rather than returning a mis-decoded value.
+Columns whose type Sluice does not model are left out of the schema: arrays,
+ranges, `tsvector` and custom types on PostgreSQL; blobs, spatial and bit types
+on MySQL. An action that names one fails validation rather than returning a
+mis-decoded value.
+
+MySQL has no UUID type and no `RETURNING`. Model a UUID column as `CHAR(36)`
+and declare the parameter `text`. When an action asks for `returning`, the
+backend re-selects the row on the same connection using the primary key values
+the write supplied, or `LAST_INSERT_ID()` for a single auto-increment key; if
+neither is available the action fails validation at first use with a message
+saying so.
 
 ## `[audit]`
 
@@ -53,6 +61,8 @@ fails validation rather than returning a mis-decoded value.
 |---|---|---|
 | `path` | `sluice-approvals.jsonl` | Durable queue of parked calls |
 | `ttl_secs` | `604800` | How long a request can wait before it expires |
+| `approver_roles` | `[]` | Roles allowed to release a parked call. Empty means any role, which `sluice doctor` warns about when HTTP is enabled |
+| `allow_self_approval` | `false` | Whether the caller who raised a request may decide it |
 
 ## `[limits]`
 
@@ -61,6 +71,76 @@ fails validation rather than returning a mis-decoded value.
 | `max_rows` | `1000` | Hard ceiling; caps any action's own `max_rows` |
 | `max_request_bytes` | `65536` | Largest accepted argument object |
 | `idempotency_ttl_secs` | `86400` | How long a completed write is remembered |
+
+## `[http]`
+
+Present only when the deployment serves HTTP. `sluice serve --http` uses it.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `listen` | `127.0.0.1:8080` | Address to bind. `--http <address>` overrides it |
+| `console` | `true` | Serve the approvals console at `/` |
+| `max_body_bytes` | `262144` | Largest accepted request body |
+| `request_timeout_secs` | `60` | Deadline for one request |
+
+TLS is not terminated here. Put a reverse proxy in front, or bind loopback and
+proxy on the same host.
+
+## `[auth]`
+
+How HTTP callers prove who they are. Ignored by the stdio transport, which
+takes its role from `--role`.
+
+```toml
+[auth]
+kind = "oidc"
+issuer = "https://id.example.com/"
+audience = ["sluice"]
+jwks_url = "https://id.example.com/.well-known/jwks.json"   # discovered from the issuer when absent
+role_claim = "sluice_role"
+caller_claim = "sub"
+attribute_claims = { region = "region", tenant = "tid" }
+role_map = { "support-eu" = "support_eu" }
+leeway_secs = 60
+refresh_secs = 300
+```
+
+The role claim may be a string, a space-separated list or an array; each value
+passes through `role_map` and the first one this deployment knows is used.
+
+`attribute_claims` is the whole of it: a claim that is not listed there never
+becomes a caller attribute. Attributes from a token override the role's
+configured defaults, which is the point — the role says what a support agent
+may do, the token says which region this one covers.
+
+`jwks_url` also accepts `file:/path/to/jwks.json` for an air-gapped install
+that ships the key material alongside the configuration. Keys are fetched at
+startup, so a wrong URL fails the boot rather than the first request, and
+re-fetched when they go stale or a token arrives with an unknown `kid`.
+
+```toml
+[auth]
+kind = "api_key"
+
+[[auth.key]]
+hash = "…64 hex characters…"    # mint with `sluice apikey --role batch`
+role = "batch"
+caller = "nightly-reconcile"
+attributes = { region = "EU" }
+```
+
+Only the digest is stored, so the file never holds anything replayable.
+Comparison is constant time.
+
+```toml
+[auth]
+kind = "none"
+role = "support_eu"
+caller = "local"
+```
+
+Development only. The server refuses to bind anything but loopback in this
+state.
 
 ## `[[role]]`
 

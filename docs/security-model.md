@@ -69,15 +69,53 @@ not "access denied". Denial leaks the existence of the row.
 
 ## Identity
 
-v0.1 has one identity per process. `sluice serve --role support_eu` fixes the
-role, and every call from that MCP client runs as it. This is honest for stdio,
-where the client is a local process the operator launched, and it is why one
-server per role is the deployment pattern today.
+Two transports, two models.
 
-It is **not** sufficient for a shared multi-user server. HTTP transport with
-OIDC, where the caller's token supplies the role and its attributes, is the
-next piece of work. Until then, do not put one Sluice process behind a shared
-endpoint and assume per-user scoping.
+**stdio** has one identity per process. `sluice serve --role support_eu` fixes
+the role and every call runs as it. That is honest for stdio, where the client
+is a local process the operator launched, and one process per role is the
+pattern.
+
+**HTTP** resolves identity per request. A bearer token is validated and mapped
+to a role and a set of attributes, so one process serves many callers with
+different scopes.
+
+For OIDC the token is checked for signature, issuer, audience and expiry, with
+a configurable leeway. **The algorithm comes from the key, never from the token
+header**, which is what closes `alg: none` and the HMAC-with-the-public-key
+substitution. Keys are fetched from a JWKS at startup — a wrong URL fails the
+boot — and re-fetched when they go stale or a token arrives with an unknown
+`kid`, which is how a normal rotation looks.
+
+The claim-to-attribute mapping is deliberately narrow: only claims the operator
+names in `attribute_claims` become attributes. There is no blanket copy. An
+identity provider that starts emitting an extra claim therefore cannot widen
+anyone's scope without a configuration change.
+
+Token attributes do override the role's configured defaults, and that is the
+point of per-request identity. It also means the identity provider is in the
+trust boundary: whoever can mint a token with `region: US` can read US rows.
+Scope the audience narrowly and treat the IdP as part of this system.
+
+API keys are stored as SHA-256 digests and compared in constant time, so the
+configuration file holds nothing replayable. `kind = "none"` disables checking
+entirely and the server refuses to bind anything but loopback in that state.
+
+## Approvals
+
+Two controls, both off the critical path of an ordinary call.
+
+`approver_roles` limits who may release a parked call. Leaving it empty means
+any role can, which `sluice doctor` warns about once HTTP is enabled.
+
+Self-approval is refused by default: the caller who raised a request may not
+decide it. A gate the requester can open is decoration, and the common failure
+is not malice but an agent looping until something lets it through.
+
+Releasing a request re-validates its arguments and re-checks the role at that
+moment, so a permission removed in the meantime is not handed back. A request
+can be claimed exactly once; a second release is a conflict, not a second
+write.
 
 ## The audit log
 
@@ -110,6 +148,12 @@ not an acceptable answer.
   in plain text. Put them on an encrypted volume; they contain masked arguments,
   not secrets, but they do contain business facts.
 - **It has had no external audit.** The controls are tested, not certified.
+- **Rate limits and replay protection are per process.** Two replicas enforce
+  them twice over. Put a shared limiter in front, or run one replica per role,
+  until the idempotency store moves into the database.
+- **Metrics are unauthenticated.** `/metrics` exposes counters and timings, not
+  data, but it does reveal action names and call volumes. Keep it on an
+  interface only your scrapers reach.
 
 ## Operational recommendations
 
@@ -119,4 +163,10 @@ not an acceptable answer.
 - Ship the audit log off the host; keep the head digest somewhere separate.
 - Run `sluice doctor` in your deploy pipeline. It fails the pipeline on a
   broken chain, an unreachable backend or a leftover example salt.
-- One process per role until HTTP and OIDC land.
+- Prefer HTTP with OIDC for anything shared; keep stdio for locally launched
+  clients.
+- Set `approver_roles`, and leave self-approval off.
+- Terminate TLS in front of the process, and keep `/metrics` off the public
+  interface.
+- Record what reads return with `sluice replay --record` before a configuration
+  change, and compare after.

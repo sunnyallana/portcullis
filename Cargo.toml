@@ -11,19 +11,19 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 license = "UNLICENSED"
 publish = false
 
 [workspace.dependencies]
-sluice-core = { path = "crates/sluice-core", version = "0.1.0" }
-sluice-sql = { path = "crates/sluice-sql", version = "0.1.0" }
-sluice-db = { path = "crates/sluice-db", version = "0.1.0", default-features = false }
-sluice-engine = { path = "crates/sluice-engine", version = "0.1.0" }
-sluice-mcp = { path = "crates/sluice-mcp", version = "0.1.0" }
-sluice-http = { path = "crates/sluice-http", version = "0.1.0" }
+sluice-core = { path = "crates/sluice-core", version = "0.2.0" }
+sluice-sql = { path = "crates/sluice-sql", version = "0.2.0" }
+sluice-db = { path = "crates/sluice-db", version = "0.2.0", default-features = false }
+sluice-engine = { path = "crates/sluice-engine", version = "0.2.0" }
+sluice-mcp = { path = "crates/sluice-mcp", version = "0.2.0" }
+sluice-http = { path = "crates/sluice-http", version = "0.2.0" }
 
 async-trait = "0.1"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query"] }
@@ -43,8 +43,9 @@ rust_decimal = { version = "1.43", features = ["serde-with-str"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 sha2 = "0.11"
+# The driver features come from sluice-db's own `postgres` / `mysql` features.
 sqlx = { version = "0.9", default-features = false, features = [
-    "runtime-tokio", "tls-rustls-ring", "postgres", "macros",
+    "runtime-tokio", "tls-rustls-ring", "macros",
     "chrono", "uuid", "rust_decimal", "json",
 ] }
 thiserror = "2.0"

@@ -10,6 +10,7 @@ description = "Sluice engine: configuration, action validation, policy and the r
 [features]
 default = ["postgres"]
 postgres = ["sluice-db/postgres"]
+mysql = ["sluice-db/mysql"]
 
 [lints]
 workspace = true

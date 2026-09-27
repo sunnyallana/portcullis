@@ -90,6 +90,44 @@ jobs:
           cargo run --quiet --bin sluice -- call --config /tmp/orders-pg.toml --action find_order --arg order_no=8812 --role support_eu --caller ci --json
           cargo run --quiet --bin sluice -- audit verify --config /tmp/orders-pg.toml
 
+  mysql:
+    name: live MySQL
+    runs-on: ubuntu-latest
+    env:
+      MYSQL_URL: mysql://root:sluice-test@127.0.0.1:3306/sluice
+    services:
+      mysql:
+        image: mysql:9
+        env:
+          MYSQL_ROOT_PASSWORD: sluice-test
+          MYSQL_DATABASE: sluice
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd "mysqladmin ping -uroot -psluice-test --silent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Load the demo schema
+        run: mysql -h127.0.0.1 -P3306 -uroot -psluice-test sluice < examples/mysql-schema.sql
+
+      - name: Backend integration tests
+        run: cargo test -p sluice-db --features mysql --test mysql_live
+        env:
+          SLUICE_TEST_MYSQL_URL: ${{ env.MYSQL_URL }}
+
+      - name: The same actions, end to end
+        env:
+          SLUICE_MASK_SALT: ci
+        run: |
+          cargo run --quiet --bin sluice -- doctor --config examples/orders-mysql.toml
+          cargo run --quiet --bin sluice -- call --config examples/orders-mysql.toml --action find_order --arg order_no=8812 --role support_eu --caller ci --json
+          cargo run --quiet --bin sluice -- audit verify --config examples/orders-mysql.toml
+
   audit:
     name: dependency audit
     runs-on: ubuntu-latest

@@ -9,12 +9,13 @@ credential, and never reaches a row outside its scope. Every call — allowed,
 refused or parked for approval — lands in a hash-chained audit log.
 
 ```
-  Agent (Claude, or your own)
-        │  MCP over stdio
+  Agents (Claude, or your own)
+        │  MCP over stdio, or HTTP with a bearer token
         ▼
   ┌──────────────────────────────┐
   │  sluice                      │
   │   · declared actions         │  ← one TOML file, validated at startup
+  │   · identity per request     │  ← OIDC claims or API keys
   │   · row filters + masking    │
   │   · approval gates           │
   │   · replay protection        │
@@ -23,7 +24,7 @@ refused or parked for approval — lands in a hash-chained audit log.
   └──────────┬───────────────────┘
              │ parameterised SQL, bounded
              ▼
-        PostgreSQL
+      PostgreSQL · MySQL
 ```
 
 ## Why
@@ -48,12 +49,24 @@ sluice call --action find_order --arg order_no=8812 --role support_us --caller b
 sluice call --action refund_order --arg order_no=8812 --arg amount=1200.00 \
             --arg reason="lost parcel" --role support_eu --caller alice              # parked for approval
 sluice approvals list
-sluice approvals approve <id> --caller manager-jane
+sluice approvals approve <id> --role support_eu --caller manager-jane
 sluice audit verify
 ```
 
 The demo runs on an in-memory fixture, so there is nothing to install. Point
-`[backend]` at PostgreSQL and the same actions work unchanged.
+`[backend]` at PostgreSQL or MySQL and the same actions work unchanged.
+
+## Point it at a database you already have
+
+```sh
+sluice profile --dsn "env:DATABASE_URL" --out draft.toml
+```
+
+That reads the catalogue, samples rows, guesses what each column holds —
+Luhn-checked card numbers, email shapes, credential-looking names — and writes
+a draft configuration with masks filled in and a row filter suggested wherever
+a tenant or region column was spotted. Reads only, and no sampled value is
+printed in the clear. Edit it down, then `sluice validate`.
 
 ## What an action looks like
 
@@ -90,38 +103,56 @@ over_amount = "500.00"
 
 Full reference: [docs/action-format.md](docs/action-format.md).
 
-## Wiring it to Claude Code
+## Two ways to serve it
+
+**stdio**, for a client that launches the process itself:
 
 ```sh
 claude mcp add orders -- sluice serve --config /etc/sluice/orders.toml --role support_eu
 ```
 
-Or in an MCP client's config:
+**HTTP**, when many people share one deployment and each needs their own scope:
 
-```json
-{
-  "mcpServers": {
-    "orders": {
-      "command": "sluice",
-      "args": ["serve", "--config", "/etc/sluice/orders.toml", "--role", "support_eu"],
-      "env": { "DATABASE_URL": "postgres://…" }
-    }
-  }
-}
+```toml
+[http]
+listen = "127.0.0.1:8080"
+
+[auth]
+kind = "oidc"
+issuer = "https://id.example.com/"
+audience = ["sluice"]
+role_claim = "sluice_role"
+attribute_claims = { region = "region" }
 ```
+
+```sh
+sluice serve --http
+```
+
+The caller's token decides their role and their scope, per request. Only claims
+the operator maps become attributes, so an identity provider that starts
+emitting a new claim cannot silently widen anyone's access. API keys
+(`sluice apikey --role batch`) cover machine callers. `kind = "none"` exists for
+local development and refuses to bind anything but loopback.
+
+The same process serves a small approvals console at `/`, a JSON approvals API,
+`/healthz`, `/readyz` and Prometheus metrics at `/metrics`.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `sluice init [dir]` | Write a starter config and demo data |
+| `sluice profile` | Read a database and draft a configuration for it |
 | `sluice validate` | Check every action against the live schema |
 | `sluice doctor` | Config, connectivity, schema, actions and audit in one pass |
 | `sluice tools` | Show what an MCP client would see |
-| `sluice serve` | Serve MCP on stdin/stdout |
+| `sluice serve [--http]` | Serve MCP on stdio, or over HTTP |
 | `sluice call` | Invoke one action from the shell, as a role |
 | `sluice approvals list \| approve \| deny` | Work the approval queue |
+| `sluice replay [--record \| --against]` | Re-run recorded reads and diff them |
 | `sluice audit verify \| tail` | Check the chain, read recent decisions |
+| `sluice apikey --role R` | Mint a key and print the config to paste |
 
 Add `--json` to any of them for machine-readable output. Logs go to stderr;
 `serve` owns stdout.
@@ -140,19 +171,27 @@ Add `--json` to any of them for machine-readable output. Logs go to stderr;
   single action is published.
 - **Retries are not duplicate writes.** A write action nominates the parameters
   that identify it; an identical retry returns the first result.
+- **An approval gate the requester can open is not a gate.** Self-approval is
+  refused by default, and `approver_roles` restricts who may release anything.
 - **Nothing happens off the record.** Refusals and parked calls are audited too,
   and `sluice audit verify` detects an edited or deleted line.
+- **You can prove a change did not change behaviour.** `sluice replay --record`
+  captures what reads return today; `--against` re-runs them later and exits 3
+  if anything differs.
 
 ## Scope, honestly
 
-v0.1 covers PostgreSQL and MCP over stdio, and does that properly. Not yet
-built: HTTP transport with OIDC (today the role is fixed per process by
-`--role`), MySQL/SQL Server/Snowflake, the schema profiler that drafts a config
-for you, action bundle versioning, and a web console for the approval queue.
-See [docs/roadmap.md](docs/roadmap.md).
+Built and tested: PostgreSQL and MySQL, MCP over stdio and HTTP, OIDC and API
+key authentication, the profiler, replay, the approvals console and queue.
 
-The in-memory backend is for the demo and the test suite. It is not a database
-and refuses to pretend otherwise.
+Not built: versioned action bundles with aliases and canary promotion — today a
+configuration change is a file edit and a restart. SQL Server, Snowflake and
+BigQuery. Multi-step actions with pushdown. See
+[docs/roadmap.md](docs/roadmap.md) for why, in that order.
+
+Rate limits and the idempotency store are per process, so a horizontally scaled
+deployment enforces them per replica. The in-memory backend is for the demo and
+the test suite; it is not a database and refuses to pretend otherwise.
 
 ## Building
 
@@ -164,16 +203,21 @@ cargo test --workspace         # needs nothing installed
 cargo clippy --workspace --all-targets
 ```
 
-The PostgreSQL backend has its own integration tests, which run against a real
-server and are skipped unless one is configured:
+The database backends have integration tests that run against real servers and
+skip unless one is configured:
 
 ```sh
 docker run -d --name sluice-pg -e POSTGRES_PASSWORD=sluice-test \
            -e POSTGRES_DB=sluice -p 55432:5432 postgres:18
-psql "postgres://postgres:sluice-test@localhost:55432/sluice" \
-     -f examples/postgres-schema.sql
+psql "postgres://postgres:sluice-test@localhost:55432/sluice" -f examples/postgres-schema.sql
 SLUICE_TEST_DATABASE_URL="postgres://postgres:sluice-test@localhost:55432/sluice" \
      cargo test -p sluice-db --test postgres_live
+
+docker run -d --name sluice-mysql -e MYSQL_ROOT_PASSWORD=sluice-test \
+           -e MYSQL_DATABASE=sluice -p 33306:3306 mysql:9
+mysql -h127.0.0.1 -P33306 -uroot -psluice-test sluice < examples/mysql-schema.sql
+SLUICE_TEST_MYSQL_URL="mysql://root:sluice-test@localhost:33306/sluice" \
+     cargo test -p sluice-db --features mysql --test mysql_live
 ```
 
 On Windows, the default MSVC toolchain needs two Visual Studio components for
@@ -196,13 +240,14 @@ Build from PowerShell rather than Git Bash: Git for Windows ships its own
 | Crate | Contents |
 |---|---|
 | `sluice-core` | Values, schema, action specs, masking, audit chain |
-| `sluice-sql` | Predicate language and parameterised statement builder |
-| `sluice-db` | Backend trait, pooled PostgreSQL, in-memory fixture |
-| `sluice-engine` | Config, validation, policy, the request path |
-| `sluice-mcp` | MCP server over stdio |
+| `sluice-sql` | Predicate language, parameterised statement builder, dialects |
+| `sluice-db` | Backend trait, pooled PostgreSQL and MySQL, in-memory fixture |
+| `sluice-engine` | Config, validation, policy, request path, profiler, replay |
+| `sluice-mcp` | MCP protocol and the stdio transport |
+| `sluice-http` | HTTP transport, OIDC and API keys, approvals API, console |
 | `sluice-cli` | The `sluice` binary |
 
 ## Licence
 
-Not yet decided; the crates are marked `UNLICENSED` so nothing is published by
-accident. Settle this before sharing the repository.
+Not yet decided; the crates are marked `UNLICENSED` and `publish = false` so
+nothing is published by accident. Settle this before sharing the repository.

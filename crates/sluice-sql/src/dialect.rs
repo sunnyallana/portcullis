@@ -92,6 +92,50 @@ impl Dialect for Postgres {
     }
 }
 
+/// MySQL and MariaDB.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MySql;
+
+impl Dialect for MySql {
+    fn name(&self) -> &'static str {
+        "mysql"
+    }
+
+    fn quote_part(&self, part: &str) -> String {
+        format!("`{part}`")
+    }
+
+    fn placeholder(&self, _index: usize) -> String {
+        // MySQL binds positionally, in the order the placeholders appear.
+        "?".to_owned()
+    }
+
+    fn upsert_clause(&self, keys: &[String], updates: &[String]) -> Result<String> {
+        if keys.is_empty() {
+            return Err(Error::Backend("an upsert needs key columns".into()));
+        }
+        if updates.is_empty() {
+            // MySQL has no DO NOTHING; assigning a key to itself is the
+            // idiomatic equivalent and touches nothing.
+            let first = self.quote(&keys[0])?;
+            return Ok(format!("ON DUPLICATE KEY UPDATE {first} = {first}"));
+        }
+        let sets = updates
+            .iter()
+            .map(|c| {
+                let q = self.quote(c)?;
+                Ok(format!("{q} = VALUES({q})"))
+            })
+            .collect::<Result<Vec<_>>>()?
+            .join(", ");
+        Ok(format!("ON DUPLICATE KEY UPDATE {sets}"))
+    }
+
+    fn supports_returning(&self) -> bool {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +153,28 @@ mod tests {
         for bad in ["orders\"; drop table x --", "orders-1", "", "a..b"] {
             assert!(Postgres.quote(bad).is_err(), "{bad} should be refused");
         }
+    }
+
+    #[test]
+    fn mysql_quotes_with_backticks_and_binds_positionally() {
+        assert_eq!(MySql.quote("app.orders").unwrap(), "`app`.`orders`");
+        assert_eq!(MySql.placeholder(1), "?");
+        assert_eq!(MySql.placeholder(7), "?");
+        assert!(MySql.quote("orders`; DROP TABLE x").is_err());
+    }
+
+    #[test]
+    fn mysql_upsert_uses_on_duplicate_key() {
+        let clause = MySql
+            .upsert_clause(&["id".into()], &["amount".into()])
+            .unwrap();
+        assert_eq!(
+            clause,
+            "ON DUPLICATE KEY UPDATE `amount` = VALUES(`amount`)"
+        );
+        // No columns to update is expressed as a self-assignment.
+        let nothing = MySql.upsert_clause(&["id".into()], &[]).unwrap();
+        assert_eq!(nothing, "ON DUPLICATE KEY UPDATE `id` = `id`");
     }
 
     #[test]

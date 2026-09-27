@@ -67,6 +67,19 @@ pub enum BackendConfig {
         /// Server-side statement timeout backstop.
         statement_timeout: Duration,
     },
+    /// MySQL or MariaDB.
+    MySql {
+        /// Resolved connection string.
+        dsn: String,
+        /// Pool ceiling.
+        max_connections: u32,
+        /// Warm connections.
+        min_connections: u32,
+        /// Databases to expose; empty means the one in the connection string.
+        schemas: Vec<String>,
+        /// Server-side statement timeout backstop.
+        statement_timeout: Duration,
+    },
     /// In-memory fixture, for `sluice demo` and tests.
     Memory {
         /// Path to the fixture file.
@@ -258,6 +271,19 @@ impl Config {
                 schemas: raw.backend.schemas,
                 statement_timeout: Duration::from_secs(raw.backend.statement_timeout_secs.unwrap_or(60)),
             },
+            "mysql" | "mariadb" => BackendConfig::MySql {
+                dsn: resolve_secret(raw.backend.dsn.as_deref(), base_dir)?.ok_or_else(|| {
+                    Error::Config(
+                        "[backend] kind = \"mysql\" needs a `dsn`; use `env:DATABASE_URL` to keep it out of the file".into(),
+                    )
+                })?,
+                max_connections: raw.backend.max_connections.unwrap_or(10),
+                min_connections: raw.backend.min_connections.unwrap_or(1),
+                schemas: raw.backend.schemas.clone(),
+                statement_timeout: Duration::from_secs(
+                    raw.backend.statement_timeout_secs.unwrap_or(60),
+                ),
+            },
             "memory" => BackendConfig::Memory {
                 fixtures: resolve_path(
                     raw.backend.fixtures.as_deref().ok_or_else(|| {
@@ -268,7 +294,7 @@ impl Config {
             },
             other => {
                 return Err(Error::Config(format!(
-                    "[backend] kind = \"{other}\" is not supported; use \"postgres\" or \"memory\""
+                    "[backend] kind = \"{other}\" is not supported; use \"postgres\", \"mysql\" or \"memory\""
                 )));
             }
         };
@@ -708,7 +734,7 @@ mod tests {
         let c = Config::parse(&src, &dir).unwrap();
         match c.backend {
             BackendConfig::Postgres { dsn, .. } => assert_eq!(dsn, "postgres://u@h/db"),
-            BackendConfig::Memory { .. } => panic!("expected postgres"),
+            other => panic!("expected postgres, got {other:?}"),
         }
         let _ = std::fs::remove_file(dir.join(&name));
     }

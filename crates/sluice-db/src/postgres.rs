@@ -269,7 +269,7 @@ impl Backend for PostgresBackend {
 
     async fn write(&self, plan: &WritePlan<'_>, ctx: &ExecCtx<'_>) -> Result<WriteOutcome> {
         let mut binder = Binder::new(ctx.args, ctx.caller);
-        let stmt = sluice_sql::write(
+        let written = sluice_sql::write(
             &WriteQuery {
                 table: plan.table,
                 mode: plan.mode,
@@ -281,6 +281,7 @@ impl Backend for PostgresBackend {
             &self.dialect,
             &mut binder,
         )?;
+        let stmt = written.statement;
 
         if plan.returning.is_empty() {
             let mut query = sqlx::query(AssertSqlSafe(stmt.sql.as_str()));

@@ -2443,7 +2443,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "sluice-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "jiff",
@@ -2462,7 +2462,7 @@ dependencies = [
 
 [[package]]
 name = "sluice-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "indexmap",
  "jiff",
@@ -2477,7 +2477,7 @@ dependencies = [
 
 [[package]]
 name = "sluice-db"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2495,7 +2495,7 @@ dependencies = [
 
 [[package]]
 name = "sluice-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "indexmap",
  "jiff",
@@ -2513,7 +2513,7 @@ dependencies = [
 
 [[package]]
 name = "sluice-http"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -2536,7 +2536,7 @@ dependencies = [
 
 [[package]]
 name = "sluice-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2548,7 +2548,7 @@ dependencies = [
 
 [[package]]
 name = "sluice-sql"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "indexmap",
  "jiff",

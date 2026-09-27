@@ -115,6 +115,30 @@ impl Engine {
                 })
                 .await?,
             ),
+            #[cfg(feature = "mysql")]
+            BackendConfig::MySql {
+                dsn,
+                max_connections,
+                min_connections,
+                schemas,
+                statement_timeout,
+            } => Arc::new(
+                sluice_db::MySqlBackend::connect(&sluice_db::mysql::MySqlConfig {
+                    dsn: dsn.clone(),
+                    max_connections: *max_connections,
+                    min_connections: *min_connections,
+                    acquire_timeout: Duration::from_secs(10),
+                    schemas: schemas.clone(),
+                    statement_timeout: *statement_timeout,
+                })
+                .await?,
+            ),
+            #[cfg(not(feature = "mysql"))]
+            BackendConfig::MySql { .. } => {
+                return Err(Error::Config(
+                    "this build has no MySQL support; rebuild with the `mysql` feature".into(),
+                ));
+            }
             #[cfg(not(feature = "postgres"))]
             BackendConfig::Postgres { .. } => {
                 return Err(Error::Config(

@@ -12,8 +12,9 @@ name = "sluice"
 path = "src/main.rs"
 
 [features]
-default = ["postgres"]
+default = ["postgres", "mysql"]
 postgres = ["sluice-engine/postgres"]
+mysql = ["sluice-engine/mysql"]
 
 [lints]
 workspace = true

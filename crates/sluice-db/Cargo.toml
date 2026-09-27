@@ -9,7 +9,8 @@ description = "Sluice backends: pooled PostgreSQL, plus an in-memory backend for
 
 [features]
 default = ["postgres"]
-postgres = ["dep:sqlx", "dep:chrono"]
+postgres = ["dep:sqlx", "dep:chrono", "sqlx?/postgres"]
+mysql = ["dep:sqlx", "dep:chrono", "sqlx?/mysql"]
 
 [lints]
 workspace = true
