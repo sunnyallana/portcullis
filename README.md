@@ -247,6 +247,13 @@ Build from PowerShell rather than Git Bash: Git for Windows ships its own
 | `portcullis-http` | HTTP transport, OIDC and API keys, approvals API, console |
 | `portcullis-cli` | The `portcullis` binary |
 
+## Contributing
+
+`CONTRIBUTING.md` covers the conventions that are not obvious from the code:
+never typing the product name in a `.rs` file, how to add an environment
+variable or a metric series so the consistency tests see it, and the rename
+procedure including the one decision in it that is not mechanical.
+
 ## Licence
 
 Not yet decided; the crates are marked `UNLICENSED` and `publish = false` so
