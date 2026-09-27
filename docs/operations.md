@@ -1,5 +1,77 @@
 # Running Portcullis
 
+## Installing
+
+Tagged releases publish three archives and a container image.
+
+```sh
+# binaries: linux x86_64 (static, musl), macOS arm64, Windows x86_64
+curl -LO https://github.com/sunnyallana/portcullis/releases/latest/download/SHA256SUMS
+curl -LO https://github.com/sunnyallana/portcullis/releases/latest/download/portcullis-v0.2.0-x86_64-unknown-linux-musl.tar.gz
+sha256sum -c SHA256SUMS --ignore-missing
+tar xzf portcullis-v0.2.0-x86_64-unknown-linux-musl.tar.gz
+```
+
+```sh
+docker pull ghcr.io/sunnyallana/portcullis:0.2.0
+```
+
+The Linux binary is statically linked against musl, so it runs on any glibc or
+musl distribution with no runtime dependencies at all.
+
+## The container image
+
+About 6 MB on `distroless/static`. No shell, no package manager, no libc, and
+it runs as uid 65532 (`nonroot`). There is nothing in it to exec into, which is
+the point.
+
+```sh
+docker run --rm   --read-only   -v /srv/portcullis:/var/lib/portcullis   -v /etc/portcullis:/etc/portcullis:ro   -e DATABASE_URL   -p 8080:8080   ghcr.io/sunnyallana/portcullis:0.2.0   serve --http 0.0.0.0:8080 --config /etc/portcullis/portcullis.toml
+```
+
+Three things about that command matter.
+
+**The state volume must be durable.** `/var/lib/portcullis` holds the audit
+chain and the approvals queue. On an ephemeral container filesystem you lose
+pending approvals on every restart and the audit trail becomes worthless.
+
+**The root filesystem can be read-only.** Nothing is written outside the
+volume, so `--read-only` costs nothing and removes a class of problem.
+
+**The image fails closed.** Serving on anything but loopback without an
+`[auth]` block is refused outright:
+
+```
+error: configuration is invalid: refusing to serve 0.0.0.0:8080 with no
+authentication; configure [auth] or bind 127.0.0.1
+```
+
+That is deliberate. A container published on a port with no authentication is
+not a configuration anyone means to have, so the process will not start rather
+than warn about it. Configure `[auth]` before you publish a port.
+
+### Kubernetes
+
+The probes need no credential, so wire them directly:
+
+```yaml
+livenessProbe:
+  httpGet: { path: /healthz, port: 8080 }
+readinessProbe:
+  httpGet: { path: /readyz, port: 8080 }   # fails while the database is unreachable
+securityContext:
+  runAsNonRoot: true
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities: { drop: ["ALL"] }
+```
+
+Mount the connection string from a Secret as `DATABASE_URL` and reference it
+from the config as `dsn = "env:DATABASE_URL"`; the file itself then holds
+nothing sensitive. Run **one replica** until shared limits land: rate limiting
+and the idempotency store are per process, so a second replica enforces them
+separately rather than jointly.
+
 ## Pointing at PostgreSQL
 
 ```toml

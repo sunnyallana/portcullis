@@ -36,6 +36,21 @@ per-system REST glue is safe and takes a quarter per system.
 Portcullis is the third option: declare what the agent may do, in a file, checked
 against the live schema before anything is published.
 
+## Install
+
+```sh
+docker pull ghcr.io/sunnyallana/portcullis:0.2.0
+```
+
+Or take a binary from the [latest release](https://github.com/sunnyallana/portcullis/releases/latest):
+static musl for Linux x86_64, arm64 for macOS, x86_64 for Windows. The Linux
+build has no runtime dependencies.
+
+The image is about 6 MB on `distroless/static` — no shell, no package manager,
+no libc — and runs as a non-root user. It refuses to serve on anything but
+loopback without an `[auth]` block, so configure authentication before you
+publish a port. [Deployment details](docs/operations.md#the-container-image).
+
 ## Try it without a database
 
 ```sh

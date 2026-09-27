@@ -1,0 +1,7 @@
+# The build context is copied wholesale; target/ alone is several gigabytes.
+target/
+.git/
+.github/
+*.jsonl
+Dockerfile
+.dockerignore

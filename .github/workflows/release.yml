@@ -1,0 +1,202 @@
+name: Release
+
+# Tagging is the trigger, so a release is always a commit someone chose.
+# workflow_dispatch builds the artifacts without publishing, which is how you
+# find out the pipeline works before you cut a real tag.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # create the release
+  packages: write   # push to ghcr.io
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # A tag that disagrees with Cargo.toml produces a release whose binaries
+  # report a different version than the tag. Cheaper to catch here.
+  version:
+    name: tag matches the manifest
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      publish: ${{ steps.read.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        shell: bash
+        run: |
+          manifest=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          echo "version=$manifest" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME#v}"
+            if [ "$tag" != "$manifest" ]; then
+              echo "::error::tag v$tag does not match Cargo.toml version $manifest"
+              exit 1
+            fi
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "building $manifest"
+
+  binaries:
+    name: ${{ matrix.target }}
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            archive: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        shell: bash
+        run: rustup target add ${{ matrix.target }}
+
+      # musl keeps the Linux binary static, which is what lets the container
+      # image have no libc in it at all.
+      - name: Install musl tooling
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+
+      - name: Build
+        shell: bash
+        run: cargo build --release --locked --target ${{ matrix.target }} --bin portcullis
+
+      - name: Package
+        shell: bash
+        run: |
+          version="${{ needs.version.outputs.version }}"
+          name="portcullis-v${version}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            cp "target/${{ matrix.target }}/release/portcullis.exe" "dist/$name/"
+          else
+            cp "target/${{ matrix.target }}/release/portcullis" "dist/$name/"
+          fi
+          cp README.md CHANGELOG.md CONTRIBUTING.md "dist/$name/"
+          cp -r docs examples "dist/$name/"
+          cd dist
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            7z a -tzip "$name.zip" "$name" > /dev/null
+          else
+            tar czf "$name.tar.gz" "$name"
+          fi
+          rm -rf "$name"
+          ls -l
+
+      # The binary has to actually run. A release that ships something the
+      # runner could build but not execute is worse than no release.
+      - name: Smoke test
+        shell: bash
+        run: |
+          bin="target/${{ matrix.target }}/release/portcullis"
+          [ "${{ matrix.archive }}" = "zip" ] && bin="$bin.exe"
+          "$bin" --version
+          "$bin" init ./smoke
+          "$bin" validate --config ./smoke/portcullis.toml
+          "$bin" call --config ./smoke/portcullis.toml \
+            --action find_order --arg order_no=8812 --role support_eu --caller ci --json
+          "$bin" audit verify --config ./smoke/portcullis.toml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  image:
+    name: container image
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build
+        run: |
+          version="${{ needs.version.outputs.version }}"
+          repo="ghcr.io/${{ github.repository_owner }}/portcullis"
+          docker build -t "${repo}:${version}" -t "${repo}:latest" .
+          echo "repo=$repo" >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_ENV"
+
+      # distroless has no shell, so the only way to prove the image works is to
+      # run the binary in it.
+      - name: Smoke test the image
+        run: |
+          docker run --rm "${repo}:${version}" --version
+          # The image runs as nonroot and its only writable path is the volume,
+          # so give it a host directory owned by the runner's user.
+          mkdir -p smoke
+          run() { docker run --rm --user "$(id -u):$(id -g)"                     -v "$PWD/smoke:/var/lib/portcullis" "${repo}:${version}" "$@"; }
+          run init /var/lib/portcullis
+          run validate --config /var/lib/portcullis/portcullis.toml
+          run audit verify --config /var/lib/portcullis/portcullis.toml
+          echo "image size: $(docker image inspect "${repo}:${version}" --format '{{.Size}}' | numfmt --to=iec)"
+
+      - name: Push
+        if: needs.version.outputs.publish == 'true'
+        run: |
+          docker push "${repo}:${version}"
+          docker push "${repo}:latest"
+
+  publish:
+    name: publish the release
+    needs: [version, binaries, image]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: staging
+
+      - name: Collect and checksum
+        shell: bash
+        run: |
+          mkdir -p dist
+          find staging -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec mv {} dist/ \;
+          cd dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      # The release body is the section of the changelog for this version, so
+      # the notes cannot drift from the file people read in the repository.
+      - name: Extract the changelog section
+        shell: bash
+        run: |
+          python3 - <<'EOF' > notes.md
+          import pathlib, re
+          version = "${{ needs.version.outputs.version }}"
+          text = pathlib.Path("CHANGELOG.md").read_text()
+          match = re.search(rf"^## {re.escape(version)}\b.*?(?=^## |\Z)", text, re.M | re.S)
+          print(match.group(0).strip() if match else f"Release {version}.")
+          EOF
+          cat notes.md
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/* \
+            --title "${{ github.ref_name }}" \
+            --notes-file notes.md \
+            --verify-tag
