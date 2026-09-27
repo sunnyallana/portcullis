@@ -6,6 +6,7 @@ members = [
     "crates/sluice-db",
     "crates/sluice-engine",
     "crates/sluice-mcp",
+    "crates/sluice-http",
     "crates/sluice-cli",
 ]
 
@@ -22,8 +23,18 @@ sluice-sql = { path = "crates/sluice-sql", version = "0.1.0" }
 sluice-db = { path = "crates/sluice-db", version = "0.1.0", default-features = false }
 sluice-engine = { path = "crates/sluice-engine", version = "0.1.0" }
 sluice-mcp = { path = "crates/sluice-mcp", version = "0.1.0" }
+sluice-http = { path = "crates/sluice-http", version = "0.1.0" }
 
 async-trait = "0.1"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query"] }
+http = "1"
+http-body-util = "0.1"
+# rust_crypto keeps token verification pure Rust: no C toolchain, and one
+# fewer native library to patch in an air-gapped install.
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto", "use_pem"] }
+# Native roots so an internal CA in the OS trust store is picked up.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "rustls-native-certs"] }
+tower = "0.5"
 clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }
 indexmap = { version = "2.14", features = ["serde"] }
 jiff = { version = "0.2", features = ["serde"] }

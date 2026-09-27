@@ -30,6 +30,10 @@ pub struct Config {
     pub approvals: ApprovalsConfig,
     /// Ceilings that apply to every action.
     pub limits: Limits,
+    /// HTTP transport settings, when `[http]` is present.
+    pub http: Option<HttpSettings>,
+    /// How HTTP callers are identified.
+    pub auth: AuthSettings,
     /// Roles, keyed by name.
     pub roles: BTreeMap<String, Role>,
     /// Actions, in file order.
@@ -86,6 +90,13 @@ pub struct ApprovalsConfig {
     pub path: PathBuf,
     /// How long a request can wait before it expires.
     pub ttl: Duration,
+    /// Roles allowed to release a parked call. Empty means any role.
+    pub approver_roles: Vec<String>,
+    /// Whether the caller who raised a request may release it themselves.
+    ///
+    /// False by default: an approval gate that the requester can clear is
+    /// decoration.
+    pub allow_self_approval: bool,
 }
 
 /// Ceilings that apply to every action.
@@ -105,6 +116,86 @@ impl Default for Limits {
             max_rows: 1_000,
             max_request_bytes: 64 * 1024,
             idempotency_ttl: Duration::from_secs(24 * 60 * 60),
+        }
+    }
+}
+
+/// HTTP transport settings.
+#[derive(Debug, Clone)]
+pub struct HttpSettings {
+    /// Address to bind, as written in the file.
+    pub listen: String,
+    /// Serve the approvals console.
+    pub console: bool,
+    /// Largest accepted request body.
+    pub max_body_bytes: usize,
+    /// Deadline for one request.
+    pub request_timeout: Duration,
+}
+
+/// One issued API key, stored as a digest.
+#[derive(Debug, Clone)]
+pub struct ApiKeySettings {
+    /// Lowercase hex SHA-256 of the key.
+    pub hash: String,
+    /// Role the key acts as.
+    pub role: String,
+    /// Identity recorded in the audit log.
+    pub caller: String,
+    /// Attributes the key carries.
+    pub attributes: BTreeMap<String, Value>,
+}
+
+/// How HTTP callers prove who they are.
+#[derive(Debug, Clone)]
+pub enum AuthSettings {
+    /// Everyone is one fixed identity. Development only.
+    Open {
+        /// Role every caller acts as.
+        role: String,
+        /// Identity recorded in the audit log.
+        caller: String,
+    },
+    /// Bearer tokens matched against issued keys.
+    ApiKey {
+        /// The issued keys.
+        keys: Vec<ApiKeySettings>,
+    },
+    /// OIDC access tokens.
+    Oidc {
+        /// Expected `iss`.
+        issuer: String,
+        /// Accepted `aud` values.
+        audience: Vec<String>,
+        /// JWKS endpoint. Discovered from the issuer when absent.
+        jwks_url: Option<String>,
+        /// Claim holding the role.
+        role_claim: String,
+        /// Claim holding the caller identity.
+        caller_claim: String,
+        /// Attribute name to claim name.
+        attribute_claims: BTreeMap<String, String>,
+        /// Claim value to deployment role.
+        role_map: BTreeMap<String, String>,
+        /// Clock skew allowance.
+        leeway: Duration,
+        /// How long a fetched key set is reused.
+        refresh_interval: Duration,
+    },
+}
+
+impl AuthSettings {
+    /// True when nothing is actually verified.
+    pub fn is_open(&self) -> bool {
+        matches!(self, Self::Open { .. })
+    }
+
+    /// One line for diagnostics.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Open { role, .. } => format!("none (everyone is `{role}`)"),
+            Self::ApiKey { keys } => format!("{} API key(s)", keys.len()),
+            Self::Oidc { issuer, .. } => format!("OIDC ({issuer})"),
         }
     }
 }
@@ -208,6 +299,8 @@ impl Config {
             ));
         }
 
+        let auth = parse_auth(raw.auth)?;
+
         let mut actions = IndexMap::new();
         for (name, raw_action) in raw.action {
             if !sluice_core::spec::is_identifier(&name) {
@@ -264,7 +357,16 @@ impl Config {
                     base_dir,
                 ),
                 ttl: Duration::from_secs(raw.approvals.ttl_secs.unwrap_or(7 * 24 * 60 * 60)),
+                approver_roles: raw.approvals.approver_roles,
+                allow_self_approval: raw.approvals.allow_self_approval,
             },
+            http: raw.http.map(|h| HttpSettings {
+                listen: h.listen.unwrap_or_else(|| "127.0.0.1:8080".to_owned()),
+                console: h.console,
+                max_body_bytes: h.max_body_bytes.unwrap_or(256 * 1024),
+                request_timeout: Duration::from_secs(h.request_timeout_secs.unwrap_or(60)),
+            }),
+            auth,
             limits: Limits {
                 max_rows: raw.limits.max_rows.unwrap_or(1_000),
                 max_request_bytes: raw.limits.max_request_bytes.unwrap_or(64 * 1024),
@@ -282,6 +384,74 @@ impl Config {
     pub fn role(&self, name: &str) -> Option<&Role> {
         self.roles.get(name)
     }
+}
+
+/// Build the authentication settings.
+///
+/// With no `[auth]` block the server is open, which is only safe on loopback;
+/// the HTTP entry point refuses to bind anything else in that state.
+fn parse_auth(raw: Option<RawAuth>) -> Result<AuthSettings> {
+    let Some(raw) = raw else {
+        return Ok(AuthSettings::Open {
+            role: String::new(),
+            caller: "local".into(),
+        });
+    };
+    Ok(match raw.kind.as_str() {
+        "none" => AuthSettings::Open {
+            role: raw.role.unwrap_or_default(),
+            caller: raw.caller.unwrap_or_else(|| "local".into()),
+        },
+        "api_key" => {
+            if raw.key.is_empty() {
+                return Err(Error::Config(
+                    "[auth] kind = \"api_key\" needs at least one [[auth.key]]".into(),
+                ));
+            }
+            let mut keys = Vec::new();
+            for k in raw.key {
+                let hash = k.hash.trim().to_ascii_lowercase();
+                if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Err(Error::Config(format!(
+                        "[[auth.key]] hash `{hash}` is not a 64-character SHA-256 digest; mint one with `sluice apikey`"
+                    )));
+                }
+                keys.push(ApiKeySettings {
+                    hash,
+                    role: k.role,
+                    caller: k.caller,
+                    attributes: k.attributes,
+                });
+            }
+            AuthSettings::ApiKey { keys }
+        }
+        "oidc" => {
+            let issuer = raw
+                .issuer
+                .ok_or_else(|| Error::Config("[auth] kind = \"oidc\" needs an `issuer`".into()))?;
+            if raw.audience.is_empty() {
+                return Err(Error::Config(
+                    "[auth] kind = \"oidc\" needs at least one `audience`; without it a token minted for another service would be accepted".into(),
+                ));
+            }
+            AuthSettings::Oidc {
+                issuer,
+                audience: raw.audience,
+                jwks_url: raw.jwks_url,
+                role_claim: raw.role_claim.unwrap_or_else(|| "sluice_role".into()),
+                caller_claim: raw.caller_claim.unwrap_or_else(|| "sub".into()),
+                attribute_claims: raw.attribute_claims,
+                role_map: raw.role_map,
+                leeway: Duration::from_secs(raw.leeway_secs.unwrap_or(60)),
+                refresh_interval: Duration::from_secs(raw.refresh_secs.unwrap_or(300)),
+            }
+        }
+        other => {
+            return Err(Error::Config(format!(
+                "[auth] kind = \"{other}\" is not supported; use \"oidc\", \"api_key\" or \"none\""
+            )));
+        }
+    })
 }
 
 /// Resolve `env:NAME`, `file:/path` or a literal.
@@ -331,6 +501,10 @@ struct RawConfig {
     #[serde(default)]
     limits: RawLimits,
     #[serde(default)]
+    http: Option<RawHttp>,
+    #[serde(default)]
+    auth: Option<RawAuth>,
+    #[serde(default)]
     role: Vec<RawRole>,
     #[serde(default)]
     action: IndexMap<String, RawAction>,
@@ -378,6 +552,10 @@ struct RawApprovals {
     path: Option<String>,
     #[serde(default)]
     ttl_secs: Option<u64>,
+    #[serde(default)]
+    approver_roles: Vec<String>,
+    #[serde(default)]
+    allow_self_approval: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -389,6 +567,63 @@ struct RawLimits {
     max_request_bytes: Option<usize>,
     #[serde(default)]
     idempotency_ttl_secs: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawHttp {
+    #[serde(default)]
+    listen: Option<String>,
+    #[serde(default = "yes")]
+    console: bool,
+    #[serde(default)]
+    max_body_bytes: Option<usize>,
+    #[serde(default)]
+    request_timeout_secs: Option<u64>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAuth {
+    kind: String,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    caller: Option<String>,
+    #[serde(default)]
+    issuer: Option<String>,
+    #[serde(default)]
+    audience: Vec<String>,
+    #[serde(default)]
+    jwks_url: Option<String>,
+    #[serde(default)]
+    role_claim: Option<String>,
+    #[serde(default)]
+    caller_claim: Option<String>,
+    #[serde(default)]
+    attribute_claims: BTreeMap<String, String>,
+    #[serde(default)]
+    role_map: BTreeMap<String, String>,
+    #[serde(default)]
+    leeway_secs: Option<u64>,
+    #[serde(default)]
+    refresh_secs: Option<u64>,
+    #[serde(default)]
+    key: Vec<RawApiKey>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawApiKey {
+    hash: String,
+    role: String,
+    caller: String,
+    #[serde(default)]
+    attributes: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Deserialize)]

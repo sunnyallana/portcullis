@@ -11,6 +11,7 @@
 //! decides how much durability to trade for throughput. Records are never
 //! dropped: when the queue is full, the caller waits.
 
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -70,6 +71,14 @@ pub struct AuditRecord {
     /// Approval request id, when one was raised or released.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub approval: Option<String>,
+    /// The caller's scope attributes at the time of the call.
+    ///
+    /// Recorded because "who could see what" is half of an audit answer, and
+    /// because it lets `sluice replay` reconstruct the request faithfully when
+    /// the attributes came from a token rather than the configuration file.
+    /// Omitted when empty, so logs written before this existed still verify.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
+    pub scope: BTreeMap<String, crate::Value>,
     /// Digest of the previous record; all zeroes for the first.
     #[serde(default)]
     pub prev: String,
@@ -334,6 +343,7 @@ mod tests {
             duration_ms: 3,
             error: None,
             approval: None,
+            scope: BTreeMap::new(),
             prev: String::new(),
             hash: String::new(),
         }

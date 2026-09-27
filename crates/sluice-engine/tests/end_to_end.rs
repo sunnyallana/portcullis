@@ -56,8 +56,16 @@ fixtures = "data.json"
 path = "audit.jsonl"
 fsync = "never"
 
+[approvals]
+approver_roles = ["manager"]
+
 [[role]]
 name = "support_eu"
+allow = ["find_order", "refund_order"]
+attributes = { region = "EU" }
+
+[[role]]
+name = "manager"
 allow = ["find_order", "refund_order"]
 attributes = { region = "EU" }
 
@@ -321,13 +329,48 @@ async fn a_large_write_is_parked_then_released_exactly_once() {
     // Nothing was written while it waited.
     assert_eq!(d.engine.approvals().pending().len(), 1);
 
-    let released = d.engine.approve(&request, "manager").await.unwrap();
+    // A role outside `approver_roles` cannot release it.
+    let wrong_role = d.engine.caller("readonly", "auditor-1").unwrap();
+    let refused = d.engine.approve(&request, &wrong_role).await.unwrap_err();
+    assert!(matches!(refused, Error::Denied { .. }), "{refused}");
+
+    let manager = d.engine.caller("manager", "manager-jane").unwrap();
+    let released = d.engine.approve(&request, &manager).await.unwrap();
     assert_eq!(released.rows_affected, 1);
     // The row filter was written into the row, not merely checked.
     assert_eq!(released.rows.to_json()[0]["region"], "EU");
 
-    let again = d.engine.approve(&request, "manager").await.unwrap_err();
+    let again = d.engine.approve(&request, &manager).await.unwrap_err();
     assert!(format!("{again}").contains("already executed"), "{again}");
+}
+
+#[tokio::test]
+async fn an_approver_cannot_release_their_own_request() {
+    let d = Deployment::new("self-approval").await;
+    // The manager role may both call the action and approve it, which is the
+    // case where self-approval would otherwise slip through.
+    let manager = d.engine.caller("manager", "manager-jane").unwrap();
+
+    let err = d
+        .engine
+        .call(
+            "refund_order",
+            &serde_json::json!({"order_no": "8812", "amount": "5000.00"}),
+            &manager,
+        )
+        .await
+        .unwrap_err();
+    let Error::ApprovalRequired { request, .. } = err else {
+        panic!("expected an approval to be required, got {err}");
+    };
+
+    let own = d.engine.approve(&request, &manager).await.unwrap_err();
+    assert!(format!("{own}").contains("may not decide it"), "{own}");
+
+    // Someone else with the same role can.
+    let other = d.engine.caller("manager", "manager-sam").unwrap();
+    let released = d.engine.approve(&request, &other).await.unwrap();
+    assert_eq!(released.rows_affected, 1);
 }
 
 #[tokio::test]

@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sluice approvals</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --fg: #1a1a18; --muted: #6b6b66; --line: #e2e2dd;
+    --card: #ffffff; --accent: #2f5d50; --danger: #8a3324; --warn: #7a5c14;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17181a; --fg: #e8e8e4; --muted: #9a9a94; --line: #2c2e31;
+      --card: #1e2022; --accent: #7fb3a2; --danger: #d98b78; --warn: #d4b45c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px; background: var(--bg); color: var(--fg);
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; font-weight: 600; }
+  .sub { color: var(--muted); margin: 0 0 24px; font-size: 14px; }
+  .bar { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+  input[type=password], input[type=text] {
+    flex: 1 1 240px; min-width: 0; padding: 8px 10px; border: 1px solid var(--line);
+    border-radius: 6px; background: var(--card); color: var(--fg); font: inherit;
+  }
+  button {
+    padding: 8px 14px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--card); color: var(--fg); font: inherit; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+  button.danger { color: var(--danger); }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px 16px; margin-bottom: 12px;
+  }
+  .row { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+  .id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  .action { font-weight: 600; }
+  .reason { color: var(--warn); margin: 6px 0; }
+  .meta { color: var(--muted); font-size: 13px; }
+  pre {
+    margin: 8px 0 0; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line);
+    border-radius: 6px; overflow-x: auto; font-size: 13px;
+  }
+  .actions { display: flex; gap: 8px; margin-top: 10px; }
+  .empty, .note { color: var(--muted); padding: 24px 0; text-align: center; }
+  .error { color: var(--danger); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Approvals</h1>
+  <p class="sub">Calls held for a human. Releasing one runs it immediately.</p>
+
+  <div class="bar">
+    <input id="token" type="password" placeholder="Bearer token" autocomplete="off" spellcheck="false">
+    <button id="connect" class="primary">Connect</button>
+    <button id="refresh">Refresh</button>
+  </div>
+
+  <div id="status" class="note">Paste a token and connect.</div>
+  <div id="list"></div>
+</main>
+
+<script>
+  // The token stays in this tab only. It is never written to localStorage,
+  // so closing the tab ends the session.
+  const KEY = 'sluice.token';
+  const $ = (id) => document.getElementById(id);
+  const tokenBox = $('token');
+  tokenBox.value = sessionStorage.getItem(KEY) || '';
+
+  function setStatus(text, isError) {
+    const el = $('status');
+    el.textContent = text;
+    el.className = isError ? 'note error' : 'note';
+  }
+
+  async function api(path, options = {}) {
+    const token = tokenBox.value.trim();
+    if (!token) throw new Error('no token');
+    const response = await fetch(path, {
+      ...options,
+      headers: { ...(options.headers || {}), 'Authorization': 'Bearer ' + token },
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.message || ('HTTP ' + response.status));
+    return body;
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+  }
+
+  function render(data) {
+    const list = $('list');
+    list.innerHTML = '';
+    if (!data.pending.length) {
+      list.innerHTML = '<div class="empty">Nothing is waiting.</div>';
+      return;
+    }
+    for (const a of data.pending) {
+      const card = document.createElement('div');
+      card.className = 'card';
+      const why = a.decidable ? '' :
+        '<div class="meta">You cannot decide this one — you raised it, or your role may not approve.</div>';
+      card.innerHTML =
+        '<div class="row"><span class="action">' + escapeHtml(a.action) + '</span>' +
+        '<span class="id">' + escapeHtml(a.id) + '</span></div>' +
+        '<div class="reason">' + escapeHtml(a.reason) + '</div>' +
+        '<div class="meta">raised by ' + escapeHtml(a.caller) + ' (' + escapeHtml(a.role) + ') at ' +
+        escapeHtml(a.created) + '</div>' +
+        '<pre>' + escapeHtml(JSON.stringify(a.args, null, 2)) + '</pre>' + why;
+
+      const actions = document.createElement('div');
+      actions.className = 'actions';
+      const approve = document.createElement('button');
+      approve.className = 'primary';
+      approve.textContent = 'Approve and run';
+      approve.disabled = !a.decidable;
+      approve.onclick = () => decide(a.id, 'approve', approve);
+      const denyButton = document.createElement('button');
+      denyButton.className = 'danger';
+      denyButton.textContent = 'Deny';
+      denyButton.disabled = !a.decidable;
+      denyButton.onclick = () => decide(a.id, 'deny', denyButton);
+      actions.append(approve, denyButton);
+      card.append(actions);
+      list.append(card);
+    }
+  }
+
+  async function decide(id, what, button) {
+    button.disabled = true;
+    try {
+      await api('/api/approvals/' + encodeURIComponent(id) + '/' + what, { method: 'POST' });
+      setStatus(what === 'approve' ? 'Released ' + id : 'Denied ' + id, false);
+      await load();
+    } catch (e) {
+      setStatus(e.message, true);
+      button.disabled = false;
+    }
+  }
+
+  async function load() {
+    try {
+      const data = await api('/api/approvals');
+      setStatus('Signed in as ' + data.viewer + ' · ' + data.pending.length + ' waiting', false);
+      render(data);
+    } catch (e) {
+      setStatus(e.message, true);
+      $('list').innerHTML = '';
+    }
+  }
+
+  $('connect').onclick = () => {
+    sessionStorage.setItem(KEY, tokenBox.value.trim());
+    load();
+  };
+  $('refresh').onclick = load;
+  tokenBox.addEventListener('keydown', (e) => { if (e.key === 'Enter') $('connect').click(); });
+
+  if (tokenBox.value) load();
+</script>
+</body>
+</html>

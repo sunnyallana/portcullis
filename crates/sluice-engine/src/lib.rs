@@ -8,9 +8,13 @@ pub mod approvals;
 pub mod config;
 pub mod engine;
 pub mod limits;
+pub mod profile;
 pub mod registry;
+pub mod replay;
 
 pub use approvals::{Approval, ApprovalStore, Status};
 pub use config::{BackendConfig, Config, Limits, Role};
 pub use engine::{CallResult, Engine};
+pub use profile::{Classification, ColumnProfile, Profile, TableProfile};
 pub use registry::{Action, Registry, Warning};
+pub use replay::{Baseline, Report, Verdict};

@@ -168,6 +168,11 @@ impl Engine {
         &self.approvals
     }
 
+    /// The backend, for tools that read the database directly.
+    pub fn backend(&self) -> Arc<dyn Backend> {
+        Arc::clone(&self.backend)
+    }
+
     /// A one-line description of the backend, with no credentials in it.
     pub fn backend_description(&self) -> String {
         self.backend.describe()
@@ -209,8 +214,13 @@ impl Engine {
     }
 
     /// Release a parked call and run it.
-    pub async fn approve(&self, id: &str, approver: &str) -> Result<CallResult> {
-        let approval = self.approvals.claim(id, approver, Status::Executed)?;
+    pub async fn approve(&self, id: &str, approver: &Caller) -> Result<CallResult> {
+        let pending = self
+            .approvals
+            .get(id)
+            .ok_or_else(|| Error::Approval(format!("no approval request `{id}`")))?;
+        self.may_decide(&pending, approver)?;
+        let approval = self.approvals.claim(id, &approver.id, Status::Executed)?;
         let caller = approval.caller.clone();
         let result = self
             .dispatch(&approval.action, &approval.args, &caller, Some(&approval))
@@ -234,8 +244,13 @@ impl Engine {
     }
 
     /// Refuse a parked call.
-    pub fn deny(&self, id: &str, approver: &str) -> Result<Approval> {
-        let approval = self.approvals.claim(id, approver, Status::Denied)?;
+    pub fn deny(&self, id: &str, approver: &Caller) -> Result<Approval> {
+        let pending = self
+            .approvals
+            .get(id)
+            .ok_or_else(|| Error::Approval(format!("no approval request `{id}`")))?;
+        self.may_decide(&pending, approver)?;
+        let approval = self.approvals.claim(id, &approver.id, Status::Denied)?;
         self.record(
             &approval.action,
             &approval.caller,
@@ -248,6 +263,31 @@ impl Engine {
             &uuid::Uuid::new_v4().to_string(),
         );
         Ok(approval)
+    }
+
+    /// May this caller decide that request?
+    ///
+    /// Two separate rules. A deployment can restrict approving to named roles,
+    /// and — unless it says otherwise — the person who raised a request cannot
+    /// clear it themselves, because a gate the requester can open is not a
+    /// gate.
+    pub fn may_decide(&self, approval: &Approval, approver: &Caller) -> Result<()> {
+        let policy = &self.config.approvals;
+        if !policy.approver_roles.is_empty()
+            && !policy.approver_roles.iter().any(|r| r == &approver.role)
+        {
+            return Err(Error::Denied {
+                role: approver.role.clone(),
+                action: format!("approving `{}`", approval.action),
+            });
+        }
+        if !policy.allow_self_approval && approval.caller.id == approver.id {
+            return Err(Error::Approval(format!(
+                "`{}` raised request {} and may not decide it",
+                approver.id, approval.id
+            )));
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -618,6 +658,7 @@ impl Engine {
             duration_ms: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
             error,
             approval,
+            scope: caller.attributes.clone(),
             prev: String::new(),
             hash: String::new(),
         });

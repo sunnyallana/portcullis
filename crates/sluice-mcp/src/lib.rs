@@ -25,37 +25,56 @@ pub const SUPPORTED_PROTOCOLS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-
 /// Server version reported during initialisation.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// One JSON-RPC request.
+///
+/// Public because both transports build one: stdio parses it from a line,
+/// HTTP from a request body. Everything downstream is shared, so the two
+/// cannot drift apart.
 #[derive(Debug, Deserialize)]
-struct Request {
+pub struct Request {
+    /// Must be "2.0".
     #[serde(default)]
-    jsonrpc: String,
+    pub jsonrpc: String,
+    /// Absent for a notification.
     #[serde(default)]
-    id: Option<Json>,
-    method: String,
+    pub id: Option<Json>,
+    /// Method name.
+    pub method: String,
+    /// Method parameters.
     #[serde(default)]
-    params: Json,
+    pub params: Json,
 }
 
+/// One JSON-RPC response.
 #[derive(Debug, Serialize)]
-struct Response {
-    jsonrpc: &'static str,
-    id: Json,
+pub struct Response {
+    /// Always "2.0".
+    pub jsonrpc: &'static str,
+    /// Echoes the request id.
+    pub id: Json,
+    /// Present on success.
     #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<Json>,
+    pub result: Option<Json>,
+    /// Present on failure.
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<RpcError>,
+    pub error: Option<RpcError>,
 }
 
+/// A JSON-RPC error object.
 #[derive(Debug, Serialize)]
-struct RpcError {
-    code: i32,
-    message: String,
+pub struct RpcError {
+    /// JSON-RPC error code.
+    pub code: i32,
+    /// Human-readable message.
+    pub message: String,
+    /// Optional structured detail.
     #[serde(skip_serializing_if = "Option::is_none")]
-    data: Option<Json>,
+    pub data: Option<Json>,
 }
 
 impl Response {
-    fn ok(id: Json, result: Json) -> Self {
+    /// A successful response.
+    pub fn ok(id: Json, result: Json) -> Self {
         Self {
             jsonrpc: "2.0",
             id,
@@ -64,7 +83,8 @@ impl Response {
         }
     }
 
-    fn err(id: Json, code: i32, message: impl Into<String>, data: Option<Json>) -> Self {
+    /// A failed response.
+    pub fn err(id: Json, code: i32, message: impl Into<String>, data: Option<Json>) -> Self {
         Self {
             jsonrpc: "2.0",
             id,
@@ -141,6 +161,13 @@ async fn handle_line(engine: &Engine, caller: &Caller, line: &str) -> Option<Res
         }
     };
 
+    handle(engine, caller, request).await
+}
+
+/// Dispatch one parsed request. `None` means it was a notification.
+///
+/// Both transports come through here, so stdio and HTTP answer identically.
+pub async fn handle(engine: &Engine, caller: &Caller, request: Request) -> Option<Response> {
     if request.jsonrpc != "2.0" {
         return Some(Response::err(
             request.id.unwrap_or(Json::Null),

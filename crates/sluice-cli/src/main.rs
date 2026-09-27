@@ -69,10 +69,24 @@ enum Command {
         common: Common,
     },
 
-    /// Serve MCP over stdin and stdout.
+    /// Serve MCP: over stdin and stdout, or over HTTP with --http.
     Serve {
+        /// Serve over HTTP instead of stdio, using the `[http]` and `[auth]`
+        /// sections. Optionally overrides the configured address.
+        #[arg(long, value_name = "ADDRESS", num_args = 0..=1, default_missing_value = "")]
+        http: Option<String>,
         #[command(flatten)]
         common: Common,
+    },
+
+    /// Mint an API key and print the configuration to paste.
+    Apikey {
+        /// Role the key will act as.
+        #[arg(long)]
+        role: String,
+        /// Identity recorded in the audit log.
+        #[arg(long, default_value = "service")]
+        caller: String,
     },
 
     /// Call one action directly, as a role.
@@ -97,6 +111,39 @@ enum Command {
     Audit {
         #[command(subcommand)]
         what: AuditCommand,
+    },
+
+    /// Re-run recorded read calls and report what changed.
+    Replay {
+        /// Write the outcomes to this file as a baseline.
+        #[arg(long, value_name = "PATH")]
+        record: Option<PathBuf>,
+        /// Compare against a baseline recorded earlier.
+        #[arg(long, value_name = "PATH")]
+        against: Option<PathBuf>,
+        #[command(flatten)]
+        common: Common,
+    },
+
+    /// Read a database and draft a configuration for it.
+    Profile {
+        /// Connection string, or `env:NAME`. Omit to profile the configured backend.
+        #[arg(long)]
+        dsn: Option<String>,
+        /// Schemas to look at. Defaults to every non-system schema.
+        #[arg(long = "schema", value_name = "NAME")]
+        schemas: Vec<String>,
+        /// Rows to sample per table.
+        #[arg(long, default_value_t = 200)]
+        sample: u32,
+        /// Where to write the draft. Defaults to standard output.
+        #[arg(long, value_name = "PATH")]
+        out: Option<PathBuf>,
+        /// Name for the drafted server.
+        #[arg(long, default_value = "drafted")]
+        name: String,
+        #[command(flatten)]
+        common: Common,
     },
 
     /// Check configuration, connectivity and schema in one pass.
@@ -175,7 +222,8 @@ async fn run(cli: Cli) -> Result<ExitCode, Error> {
         Command::Init { directory, force } => init(&directory, force),
         Command::Validate { common } => validate(&common).await,
         Command::Tools { common } => tools(&common).await,
-        Command::Serve { common } => serve(&common).await,
+        Command::Serve { http, common } => serve(&common, http.as_deref()).await,
+        Command::Apikey { role, caller } => Ok(apikey(&role, &caller)),
         Command::Call {
             action,
             args,
@@ -184,6 +232,29 @@ async fn run(cli: Cli) -> Result<ExitCode, Error> {
         Command::Approvals { what } => approvals(what).await,
         Command::Audit { what } => audit(what),
         Command::Doctor { common } => doctor(&common).await,
+        Command::Replay {
+            record,
+            against,
+            common,
+        } => replay(&common, record.as_deref(), against.as_deref()).await,
+        Command::Profile {
+            dsn,
+            schemas,
+            sample,
+            out,
+            name,
+            common,
+        } => {
+            profile(
+                &common,
+                dsn.as_deref(),
+                &schemas,
+                sample,
+                out.as_deref(),
+                &name,
+            )
+            .await
+        }
     }
 }
 
@@ -327,10 +398,13 @@ async fn tools(common: &Common) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
-async fn serve(common: &Common) -> Result<ExitCode, Error> {
+async fn serve(common: &Common, http: Option<&str>) -> Result<ExitCode, Error> {
     let (engine, warnings) = build(common).await?;
     for w in &warnings {
         tracing::warn!(action = %w.action, "{}", w.message);
+    }
+    if let Some(address) = http {
+        return serve_http(engine, address).await;
     }
     let caller = caller_for(&engine, common)?;
     tracing::info!(
@@ -343,6 +417,362 @@ async fn serve(common: &Common) -> Result<ExitCode, Error> {
     sluice_mcp::serve_stdio(Arc::clone(&engine), caller).await?;
     engine.flush_audit()?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// Re-run recorded read calls and report what changed.
+async fn replay(
+    common: &Common,
+    record: Option<&std::path::Path>,
+    against: Option<&std::path::Path>,
+) -> Result<ExitCode, Error> {
+    use sluice_engine::replay::{Baseline, Verdict, recorded_calls};
+
+    let (engine, _) = build(common).await?;
+    let (calls, skipped) = recorded_calls(&engine.config().audit.path, &engine)?;
+
+    if calls.is_empty() {
+        println!(
+            "{}",
+            "no replayable calls in the audit log (writes and masked calls are never replayed)"
+                .dimmed()
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let baseline = against.map(Baseline::load).transpose()?;
+    let mut report = sluice_engine::replay::replay(&engine, &calls, baseline.as_ref()).await?;
+    report.skipped = skipped;
+    engine.flush_audit()?;
+
+    if common.json {
+        let changes: Vec<_> = report
+            .changes()
+            .iter()
+            .map(|(key, verdict)| serde_json::json!({ "call": key, "verdict": format!("{verdict:?}") }))
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({
+                "replayed": report.outcomes.len(),
+                "skipped": report.skipped.len(),
+                "changes": changes,
+                "clean": report.is_clean(),
+            })
+        );
+    } else {
+        println!(
+            "replayed {} call(s), skipped {}",
+            report.outcomes.len().to_string().bold(),
+            report.skipped.len()
+        );
+        for (label, why) in &report.skipped {
+            println!("  {} {label}: {}", "skip".dimmed(), why.reason().dimmed());
+        }
+        if against.is_some() {
+            for (key, verdict) in report.changes() {
+                let text = match verdict {
+                    Verdict::RowsChanged { before, after } => {
+                        format!("{before} row(s) before, {after} now")
+                    }
+                    Verdict::ContentChanged => "same count, different content".to_owned(),
+                    Verdict::StatusChanged { before, after } => format!(
+                        "{} before, {} now",
+                        before.as_deref().unwrap_or("ok"),
+                        after.as_deref().unwrap_or("ok")
+                    ),
+                    Verdict::Same | Verdict::New => continue,
+                };
+                println!("{} {key}", "changed".yellow().bold());
+                println!("        {text}");
+            }
+            if report.is_clean() {
+                println!("{}", "nothing changed".green().bold());
+            }
+        }
+    }
+
+    if let Some(path) = record {
+        let baseline = Baseline {
+            recorded: jiff::Timestamp::now().to_string(),
+            outcomes: report.outcomes.clone(),
+        };
+        baseline.save(path)?;
+        println!("{} {}", "recorded".green(), path.display());
+    }
+
+    // A difference is not an error, but it should fail a pipeline that asked.
+    Ok(if against.is_some() && !report.is_clean() {
+        ExitCode::from(3)
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+/// Read a database and draft a configuration for it.
+async fn profile(
+    common: &Common,
+    dsn: Option<&str>,
+    schemas: &[String],
+    sample: u32,
+    out: Option<&std::path::Path>,
+    name: &str,
+) -> Result<ExitCode, Error> {
+    use sluice_db::Backend;
+
+    // Profiling happens before any actions exist, so it can work from a bare
+    // connection string rather than a finished configuration.
+    let backend: Arc<dyn Backend> = if let Some(spec) = dsn {
+        let resolved = if let Some(var) = spec.strip_prefix("env:") {
+            std::env::var(var)
+                .map_err(|_| Error::Config(format!("environment variable `{var}` is not set")))?
+        } else {
+            spec.to_owned()
+        };
+        connect_for_profile(&resolved, schemas).await?
+    } else {
+        let (engine, _) = build(common).await?;
+        engine.backend()
+    };
+
+    let schema = backend.schema().await?;
+    eprintln!(
+        "{} {} table(s) from {}",
+        "reading".dimmed(),
+        schema.tables.len(),
+        backend.describe()
+    );
+    let profile = sluice_engine::profile::profile(backend.as_ref(), &schema, sample).await?;
+    eprintln!("{} {}", "found".dimmed(), profile.summary());
+    emit_profile(&profile, out, name)
+}
+
+#[cfg(feature = "postgres")]
+async fn connect_for_profile(
+    dsn: &str,
+    schemas: &[String],
+) -> Result<Arc<dyn sluice_db::Backend>, Error> {
+    Ok(Arc::new(
+        sluice_db::PostgresBackend::connect(&sluice_db::postgres::PgConfig {
+            dsn: dsn.to_owned(),
+            max_connections: 2,
+            min_connections: 1,
+            acquire_timeout: std::time::Duration::from_secs(10),
+            schemas: schemas.to_vec(),
+            statement_timeout: std::time::Duration::from_secs(60),
+        })
+        .await?,
+    ))
+}
+
+#[cfg(not(feature = "postgres"))]
+async fn connect_for_profile(
+    _dsn: &str,
+    _schemas: &[String],
+) -> Result<Arc<dyn sluice_db::Backend>, Error> {
+    Err(Error::Config(
+        "this build has no PostgreSQL support; rebuild with the `postgres` feature".into(),
+    ))
+}
+
+fn emit_profile(
+    profile: &sluice_engine::Profile,
+    out: Option<&std::path::Path>,
+    name: &str,
+) -> Result<ExitCode, Error> {
+    let draft = profile.to_toml(name);
+    match out {
+        Some(path) => {
+            std::fs::write(path, &draft)?;
+            println!("{} {}", "wrote".green(), path.display());
+            println!();
+            println!("Next:");
+            println!("  review the masks and row filters, then");
+            println!("  sluice validate --config {}", path.display());
+        }
+        None => print!("{draft}"),
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Serve MCP over HTTP, with identity resolved per request.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one authenticator per kind; the kinds read better together"
+)]
+async fn serve_http(engine: Engine, address_override: &str) -> Result<ExitCode, Error> {
+    use sluice_engine::config::AuthSettings;
+    use sluice_http::HttpConfig;
+    use sluice_http::auth::{
+        ApiKey, ApiKeyAuthenticator, Authenticator, HttpKeySource, OidcAuthenticator, OidcConfig,
+        OpenAuthenticator, StaticKeySource,
+    };
+
+    let settings = engine
+        .config()
+        .http
+        .clone()
+        .unwrap_or(sluice_engine::config::HttpSettings {
+            listen: "127.0.0.1:8080".into(),
+            console: true,
+            max_body_bytes: 256 * 1024,
+            request_timeout: std::time::Duration::from_secs(60),
+        });
+    let listen_text = if address_override.is_empty() {
+        settings.listen.clone()
+    } else {
+        address_override.to_owned()
+    };
+    let listen: std::net::SocketAddr = listen_text
+        .parse()
+        .map_err(|e| Error::Config(format!("`{listen_text}` is not an address to bind: {e}")))?;
+
+    let auth: Arc<dyn Authenticator> = match engine.config().auth.clone() {
+        AuthSettings::Open { role, caller } => {
+            // An open server reachable from off-box is not a configuration
+            // anyone means to have, so it is refused rather than warned about.
+            if !listen.ip().is_loopback() {
+                return Err(Error::Config(format!(
+                    "refusing to serve {listen} with no authentication; configure [auth] or bind 127.0.0.1"
+                )));
+            }
+            let role = if role.is_empty() {
+                let roles: Vec<&String> = engine.config().roles.keys().collect();
+                match roles.as_slice() {
+                    [only] => (*only).clone(),
+                    _ => {
+                        return Err(Error::Config(
+                            "[auth] kind = \"none\" needs a `role` when the deployment has several"
+                                .into(),
+                        ));
+                    }
+                }
+            } else {
+                role
+            };
+            engine.caller(&role, &caller)?; // fail now if the role is unknown
+            Arc::new(OpenAuthenticator::new(role, caller))
+        }
+        AuthSettings::ApiKey { keys } => Arc::new(ApiKeyAuthenticator::new(
+            keys.into_iter()
+                .map(|k| ApiKey {
+                    hash: k.hash,
+                    role: k.role,
+                    caller: k.caller,
+                    attributes: k.attributes,
+                })
+                .collect(),
+        )),
+        AuthSettings::Oidc {
+            issuer,
+            audience,
+            jwks_url,
+            role_claim,
+            caller_claim,
+            attribute_claims,
+            role_map,
+            leeway,
+            refresh_interval,
+        } => {
+            let config = OidcConfig {
+                issuer: issuer.clone(),
+                audience,
+                role_claim,
+                caller_claim,
+                attribute_claims,
+                role_map,
+                leeway,
+                refresh_interval,
+            };
+            let source: Arc<dyn sluice_http::auth::KeySource> = match jwks_url {
+                Some(url) if url.starts_with("file:") => {
+                    let path = url.trim_start_matches("file:");
+                    let text = std::fs::read_to_string(path)
+                        .map_err(|e| Error::Config(format!("cannot read `{path}`: {e}")))?;
+                    let set = serde_json::from_str(&text)
+                        .map_err(|e| Error::Config(format!("`{path}` is not a JWKS: {e}")))?;
+                    Arc::new(StaticKeySource(set))
+                }
+                Some(url) => Arc::new(HttpKeySource::new(url).map_err(Error::Config)?),
+                None => Arc::new(
+                    HttpKeySource::discover(&issuer)
+                        .await
+                        .map_err(Error::Config)?,
+                ),
+            };
+            let authenticator = OidcAuthenticator::new(config, source);
+            // Fetch the keys now: a wrong URL should fail the boot, not the
+            // first request at 3am.
+            let count = authenticator.warm().await.map_err(Error::Config)?;
+            tracing::info!(keys = count, issuer = %issuer, "loaded signing keys");
+            Arc::new(authenticator)
+        }
+    };
+
+    if engine.config().approvals.approver_roles.is_empty() {
+        tracing::warn!(
+            "[approvals] approver_roles is empty, so any role may release a parked call over HTTP"
+        );
+    }
+
+    tracing::info!(
+        backend = %engine.backend_description(),
+        actions = engine.registry().len(),
+        auth = %auth.describe(),
+        "starting"
+    );
+
+    let config = HttpConfig {
+        listen,
+        console: settings.console,
+        max_body_bytes: settings.max_body_bytes,
+        request_timeout: settings.request_timeout,
+    };
+    let engine = Arc::new(engine);
+    let shutdown = shutdown_signal();
+    sluice_http::serve(Arc::clone(&engine), auth, &config, shutdown).await?;
+    engine.flush_audit()?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Resolve when the process is asked to stop.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        if let Ok(mut s) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            s.recv().await;
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => tracing::info!("interrupted; finishing in-flight requests"),
+        () = terminate => tracing::info!("terminating; finishing in-flight requests"),
+    }
+}
+
+/// Mint an API key. The key is shown once; only its digest is stored.
+fn apikey(role: &str, caller: &str) -> ExitCode {
+    let key = format!(
+        "sk_{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    let hash = sluice_http::auth::ApiKeyAuthenticator::hash(&key);
+    println!("{}", "Key (shown once, store it now):".bold());
+    println!("  {key}");
+    println!();
+    println!("{}", "Add to your configuration:".bold());
+    println!();
+    println!("[[auth.key]]");
+    println!("hash = \"{hash}\"");
+    println!("role = \"{role}\"");
+    println!("caller = \"{caller}\"");
+    ExitCode::SUCCESS
 }
 
 async fn call(common: &Common, action: &str, args: &[String]) -> Result<ExitCode, Error> {
@@ -496,7 +926,8 @@ async fn approvals(what: ApprovalCommand) -> Result<ExitCode, Error> {
         }
         ApprovalCommand::Approve { id, common } => {
             let (engine, _) = build(&common).await?;
-            let result = engine.approve(&id, &common.caller).await?;
+            let approver = caller_for(&engine, &common)?;
+            let result = engine.approve(&id, &approver).await?;
             println!("{} {}", "approved".green().bold(), id);
             print_result(&result);
             engine.flush_audit()?;
@@ -504,7 +935,8 @@ async fn approvals(what: ApprovalCommand) -> Result<ExitCode, Error> {
         }
         ApprovalCommand::Deny { id, common } => {
             let (engine, _) = build(&common).await?;
-            let a = engine.deny(&id, &common.caller)?;
+            let approver = caller_for(&engine, &common)?;
+            let a = engine.deny(&id, &approver)?;
             println!("{} {} ({})", "denied".red().bold(), a.id, a.action);
             engine.flush_audit()?;
             Ok(ExitCode::SUCCESS)
