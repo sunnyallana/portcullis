@@ -276,7 +276,14 @@ async fn tools_list_describes_the_published_actions() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["id"], 7);
     let tools = body["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 2);
+    // Two configured actions, plus the one the engine answers itself.
+    assert_eq!(tools.len(), 3);
+    let status = tools
+        .iter()
+        .find(|t| t["name"] == "approval_status")
+        .expect("the built-in status tool should be published");
+    assert_eq!(status["annotations"]["readOnlyHint"], true);
+    assert_eq!(status["inputSchema"]["required"][0], "request");
     let refund = tools.iter().find(|t| t["name"] == "refund_order").unwrap();
     assert_eq!(refund["annotations"]["readOnlyHint"], false);
     assert_eq!(refund["annotations"]["idempotentHint"], true);

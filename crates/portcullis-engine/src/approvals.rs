@@ -56,6 +56,13 @@ pub struct Approval {
     /// When it was decided.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub decided: Option<String>,
+    /// What the call produced once it ran.
+    ///
+    /// Kept so the caller that raised the request can find out what happened
+    /// without being told directly: an approved write returns its result to
+    /// the approver, not to the agent that asked.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub result: Option<serde_json::Value>,
 }
 
 impl Approval {
@@ -128,6 +135,7 @@ impl ApprovalStore {
             status: Status::Pending,
             decided_by: None,
             decided: None,
+            result: None,
         };
         self.persist(&approval)?;
         self.state
@@ -208,6 +216,22 @@ impl ApprovalStore {
                 }
             ))),
         }
+    }
+
+    /// Record what an approved call produced, so the requester can collect it.
+    pub fn record_result(&self, id: &str, result: &serde_json::Value) -> Result<()> {
+        let snapshot = {
+            let mut state = self
+                .state
+                .lock()
+                .expect("approval store mutex was poisoned");
+            let Some(approval) = state.get_mut(id) else {
+                return Ok(());
+            };
+            approval.result = Some(result.clone());
+            approval.clone()
+        };
+        self.persist(&snapshot)
     }
 
     fn persist(&self, approval: &Approval) -> Result<()> {

@@ -346,6 +346,75 @@ async fn a_large_write_is_parked_then_released_exactly_once() {
 }
 
 #[tokio::test]
+async fn a_caller_can_find_out_what_happened_to_its_parked_write() {
+    let d = Deployment::new("status").await;
+    let eu = d.engine.caller("support_eu", "alice").unwrap();
+
+    let err = d
+        .engine
+        .call(
+            "refund_order",
+            &serde_json::json!({"order_no": "8812", "amount": "2500.00"}),
+            &eu,
+        )
+        .await
+        .unwrap_err();
+    let Error::ApprovalRequired { request, .. } = err else {
+        panic!("expected an approval to be required, got {err}");
+    };
+
+    // The requester can see it is waiting.
+    let status = |who: &portcullis_core::Caller| {
+        let engine = &d.engine;
+        let args = serde_json::json!({ "request": request });
+        let who = who.clone();
+        async move { engine.call("approval_status", &args, &who).await }
+    };
+
+    let waiting = status(&eu).await.unwrap();
+    assert_eq!(waiting.rows.to_json()[0]["status"], "pending");
+    assert_eq!(waiting.rows.to_json()[0]["action"], "refund_order");
+    assert!(waiting.rows.to_json()[0].get("result").is_none());
+
+    // Someone unrelated is told it does not exist rather than that it is
+    // theirs to see: a request id must not be a way to probe for other
+    // people's calls.
+    let stranger = d.engine.caller("readonly", "nosey").unwrap();
+    let refused = status(&stranger).await.unwrap_err();
+    assert!(
+        format!("{refused}").contains("no approval request"),
+        "{refused}"
+    );
+
+    // Once released, the requester can collect the outcome it was never sent.
+    let manager = d.engine.caller("manager", "manager-jane").unwrap();
+    d.engine.approve(&request, &manager).await.unwrap();
+
+    let done = status(&eu).await.unwrap();
+    let row = done.rows.to_json();
+    assert_eq!(row[0]["status"], "executed");
+    assert_eq!(row[0]["decided_by"], "manager-jane");
+    assert_eq!(row[0]["result"]["rows_affected"], 1);
+}
+
+#[tokio::test]
+async fn the_status_action_name_cannot_be_taken_by_a_configuration() {
+    let dir =
+        std::env::temp_dir().join(format!("portcullis-e2e-reserved-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("data.json"), FIXTURE).unwrap();
+    // Rename the action and the grants that reference it, so the only thing
+    // wrong with this configuration is the reserved name.
+    let clashing = CONFIG
+        .replace("[action.find_order]", "[action.approval_status]")
+        .replace("\"find_order\"", "\"approval_status\"");
+    let config = Config::parse(&clashing, &dir).unwrap();
+    let err = Engine::build(config).await.unwrap_err();
+    assert!(format!("{err}").contains("reserved"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn an_approver_cannot_release_their_own_request() {
     let d = Deployment::new("self-approval").await;
     // The manager role may both call the action and approve it, which is the

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use indexmap::IndexMap;
-use portcullis_core::audit::Fsync;
+use portcullis_core::audit::{Fsync, Rotate};
 use portcullis_core::branding;
 use portcullis_core::spec::RawAction;
 use portcullis_core::{ActionSpec, Error, Result, Value};
@@ -95,6 +95,8 @@ pub struct AuditConfig {
     pub path: PathBuf,
     /// Durability policy.
     pub fsync: Fsync,
+    /// When to close a segment and start a new one.
+    pub rotate: Rotate,
 }
 
 /// Approval store settings.
@@ -113,6 +115,18 @@ pub struct ApprovalsConfig {
     pub allow_self_approval: bool,
 }
 
+/// Where rate-limit counters and replay keys live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LimitStore {
+    /// In this process. Fast, and enforced per replica rather than per
+    /// deployment.
+    #[default]
+    Local,
+    /// In the database, shared by every replica. Needs the tables in
+    /// `examples/shared-state-*.sql` and a backend that supports them.
+    Database,
+}
+
 /// Ceilings that apply to every action.
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
@@ -122,6 +136,8 @@ pub struct Limits {
     pub max_request_bytes: usize,
     /// How long a completed write is remembered for idempotency.
     pub idempotency_ttl: Duration,
+    /// Whether limits are enforced per process or across the deployment.
+    pub store: LimitStore,
 }
 
 impl Default for Limits {
@@ -130,6 +146,7 @@ impl Default for Limits {
             max_rows: 1_000,
             max_request_bytes: 64 * 1024,
             idempotency_ttl: Duration::from_secs(24 * 60 * 60),
+            store: LimitStore::Local,
         }
     }
 }
@@ -374,6 +391,20 @@ impl Config {
                     base_dir,
                 ),
                 fsync: raw.audit.fsync.unwrap_or_default(),
+                rotate: Rotate {
+                    // An explicit 0 turns rotation off; absent means the
+                    // default. Some(0) would otherwise rotate every record.
+                    max_bytes: match raw.audit.rotate_bytes {
+                        Some(0) => None,
+                        Some(bytes) => Some(bytes),
+                        None => Rotate::default().max_bytes,
+                    },
+                    max_age: raw
+                        .audit
+                        .rotate_days
+                        .filter(|d| *d > 0)
+                        .map(|d| Duration::from_secs(d * 86_400)),
+                },
             },
             approvals: ApprovalsConfig {
                 path: resolve_path(
@@ -400,6 +431,15 @@ impl Config {
                 idempotency_ttl: Duration::from_secs(
                     raw.limits.idempotency_ttl_secs.unwrap_or(24 * 60 * 60),
                 ),
+                store: match raw.limits.store.as_deref() {
+                    None | Some("local") => LimitStore::Local,
+                    Some("database") => LimitStore::Database,
+                    Some(other) => {
+                        return Err(Error::Config(format!(
+                            "[limits] store = \"{other}\" is not supported; use \"local\" or \"database\""
+                        )));
+                    }
+                },
             },
             roles,
             actions,
@@ -572,6 +612,12 @@ struct RawAudit {
     path: Option<String>,
     #[serde(default)]
     fsync: Option<Fsync>,
+    /// Close a segment once it passes this many bytes. 0 disables rotation.
+    #[serde(default)]
+    rotate_bytes: Option<u64>,
+    /// Close a segment once it has been open this many days.
+    #[serde(default)]
+    rotate_days: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -590,6 +636,8 @@ struct RawApprovals {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawLimits {
+    #[serde(default)]
+    store: Option<String>,
     #[serde(default)]
     max_rows: Option<u32>,
     #[serde(default)]

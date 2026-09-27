@@ -191,6 +191,19 @@ enum AuditCommand {
         #[command(flatten)]
         common: Common,
     },
+    /// List the closed segments and their seals.
+    Segments {
+        #[command(flatten)]
+        common: Common,
+    },
+    /// Close the current segment now.
+    ///
+    /// For a log no server is writing to. A running server rotates on its own
+    /// policy; two processes writing one log is how a chain gets corrupted.
+    Rotate {
+        #[command(flatten)]
+        common: Common,
+    },
 }
 
 #[tokio::main]
@@ -946,6 +959,10 @@ async fn approvals(what: ApprovalCommand) -> Result<ExitCode, Error> {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one arm per subcommand; they read better together"
+)]
 fn audit(what: AuditCommand) -> Result<ExitCode, Error> {
     match what {
         AuditCommand::Verify { common } => {
@@ -964,12 +981,16 @@ fn audit(what: AuditCommand) -> Result<ExitCode, Error> {
                 );
             } else if report.is_intact() {
                 println!(
-                    "{} {} record(s), chain intact",
+                    "{} {} record(s) across {} segment(s) and the live file, chain intact",
                     "ok".green().bold(),
-                    report.records
+                    report.records,
+                    report.segments
                 );
                 println!("head {}", report.head.dimmed());
             } else {
+                if let Some(file) = &report.broken_in {
+                    println!("{} in {}", "TAMPERED".red().bold(), file.display());
+                }
                 println!(
                     "{} chain breaks at line {}",
                     "TAMPERED".red().bold(),
@@ -1008,6 +1029,72 @@ fn audit(what: AuditCommand) -> Result<ExitCode, Error> {
                         v["duration_ms"].as_u64().unwrap_or(0),
                     );
                 }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        AuditCommand::Segments { common } => {
+            let config = Config::load(&common.config)?;
+            let segments = portcullis_core::audit::segments(&config.audit.path);
+            if common.json {
+                let rows: Vec<_> = segments
+                    .iter()
+                    .map(|p| {
+                        let seal = std::fs::read_to_string(format!("{}.seal", p.display()))
+                            .ok()
+                            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+                        serde_json::json!({ "segment": p.file_name().and_then(|n| n.to_str()), "seal": seal })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+                return Ok(ExitCode::SUCCESS);
+            }
+            if segments.is_empty() {
+                println!(
+                    "{}",
+                    "no closed segments; everything is in the live file".dimmed()
+                );
+            }
+            for path in &segments {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+                match std::fs::read_to_string(format!("{}.seal", path.display()))
+                    .ok()
+                    .and_then(|t| serde_json::from_str::<portcullis_core::Seal>(&t).ok())
+                {
+                    Some(seal) => println!(
+                        "{name}  {} record(s), seq {}-{}, closed {}
+      head {}",
+                        seal.records,
+                        seal.first_seq,
+                        seal.last_seq,
+                        seal.closed,
+                        seal.head.dimmed()
+                    ),
+                    None => println!("{name}  {}", "no seal beside this segment".yellow()),
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        AuditCommand::Rotate { common } => {
+            let config = Config::load(&common.config)?;
+            let before = portcullis_core::audit::segments(&config.audit.path).len();
+            {
+                let log =
+                    AuditLog::open(&config.audit.path, config.audit.fsync, config.audit.rotate)?;
+                log.rotate_now()?;
+            }
+            let after = portcullis_core::audit::segments(&config.audit.path).len();
+            if after > before {
+                let newest = portcullis_core::audit::segments(&config.audit.path)
+                    .pop()
+                    .and_then(|p| {
+                        p.file_name()
+                            .and_then(|n| n.to_str())
+                            .map(ToOwned::to_owned)
+                    })
+                    .unwrap_or_default();
+                println!("{} {newest}", "sealed".green().bold());
+            } else {
+                println!("{}", "nothing to rotate; the live file is empty".dimmed());
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -1070,9 +1157,10 @@ async fn doctor(common: &Common) -> Result<ExitCode, Error> {
     let report = AuditLog::verify(engine.config().audit.path.as_path())?;
     if report.is_intact() {
         println!(
-            "  {} {} record(s), chain intact",
+            "  {} {} record(s) across {} segment(s), chain intact",
             "ok".green(),
-            report.records
+            report.records,
+            report.segments
         );
     } else {
         println!(

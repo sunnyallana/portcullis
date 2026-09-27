@@ -314,6 +314,84 @@ impl Backend for PostgresBackend {
             .map(|_| ())
             .map_err(|e| Error::Backend(sanitise(&e)))
     }
+
+    async fn supports_shared_state(&self) -> Result<bool> {
+        // True only once both tables exist, so a misconfigured deployment
+        // fails at startup rather than at the first write.
+        let row: (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM information_schema.tables              WHERE table_name IN ('portcullis_rate', 'portcullis_replay')",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| Error::Backend(sanitise(&e)))?;
+        Ok(row.0 >= 2)
+    }
+
+    async fn rate_check(&self, caller: &str, action: &str, per_minute: u32) -> Result<bool> {
+        let bucket = jiff::Timestamp::now().as_second() / 60;
+        // One statement: the upsert returns the post-increment count, so two
+        // replicas racing still see distinct values.
+        let row: (i32,) = sqlx::query_as(
+            "INSERT INTO portcullis_rate (caller, action, bucket, hits) VALUES ($1, $2, $3, 1)              ON CONFLICT (caller, action, bucket)              DO UPDATE SET hits = portcullis_rate.hits + 1              RETURNING hits",
+        )
+        .bind(caller)
+        .bind(action)
+        .bind(bucket)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| Error::Backend(sanitise(&e)))?;
+
+        // Opportunistic prune. Cheap, indexed, and keeps the table from
+        // growing without a separate cron job.
+        let _ = sqlx::query("DELETE FROM portcullis_rate WHERE bucket < $1")
+            .bind(bucket - 5)
+            .execute(&self.pool)
+            .await;
+
+        Ok(u32::try_from(row.0).unwrap_or(u32::MAX) <= per_minute)
+    }
+
+    async fn replay_get(&self, key: &str, ttl: Duration) -> Result<Option<serde_json::Value>> {
+        let cutoff =
+            jiff::Timestamp::now().as_second() - i64::try_from(ttl.as_secs()).unwrap_or(i64::MAX);
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT response FROM portcullis_replay WHERE key = $1 AND at > $2")
+                .bind(key)
+                .bind(cutoff)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| Error::Backend(sanitise(&e)))?;
+        Ok(row.and_then(|(text,)| serde_json::from_str(&text).ok()))
+    }
+
+    async fn replay_put(
+        &self,
+        key: &str,
+        action: &str,
+        response: &serde_json::Value,
+        ttl: Duration,
+    ) -> Result<()> {
+        let now = jiff::Timestamp::now().as_second();
+        // DO NOTHING rather than overwrite: the first answer is the one the
+        // caller already has, and a retry must keep getting it.
+        sqlx::query(
+            "INSERT INTO portcullis_replay (key, action, response, at) VALUES ($1, $2, $3, $4)              ON CONFLICT (key) DO NOTHING",
+        )
+        .bind(key)
+        .bind(action)
+        .bind(response.to_string())
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| Error::Backend(sanitise(&e)))?;
+
+        let cutoff = now - i64::try_from(ttl.as_secs()).unwrap_or(i64::MAX);
+        let _ = sqlx::query("DELETE FROM portcullis_replay WHERE at < $1")
+            .bind(cutoff)
+            .execute(&self.pool)
+            .await;
+        Ok(())
+    }
 }
 
 type PgQuery<'q> = sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>;

@@ -389,3 +389,53 @@ async fn health_check_answers_and_the_label_hides_the_password() {
     assert!(b.describe().starts_with("mysql://"));
     assert!(!b.describe().contains("portcullis-test"));
 }
+
+#[tokio::test]
+async fn shared_limits_are_enforced_across_processes() {
+    let b = backend!();
+    assert!(
+        b.supports_shared_state().await.unwrap(),
+        "the shared-state tables should exist; load examples/shared-state-mysql.sql"
+    );
+
+    // A caller unique to this run, so the test does not collide with itself.
+    let caller = format!("rate-{}", uuid::Uuid::new_v4());
+    for i in 1..=3u32 {
+        assert!(
+            b.rate_check(&caller, "find_order", 3).await.unwrap(),
+            "call {i} of 3 should be inside the limit"
+        );
+    }
+    assert!(
+        !b.rate_check(&caller, "find_order", 3).await.unwrap(),
+        "the fourth call is over the limit"
+    );
+    // A different action has its own counter.
+    assert!(b.rate_check(&caller, "list_orders", 3).await.unwrap());
+}
+
+#[tokio::test]
+async fn replay_protection_survives_in_the_database() {
+    let b = backend!();
+    let key = uuid::Uuid::new_v4().simple().to_string();
+    let ttl = Duration::from_secs(3600);
+
+    assert!(b.replay_get(&key, ttl).await.unwrap().is_none());
+
+    let first = serde_json::json!({ "refund_id": "abc", "amount": "12.34" });
+    b.replay_put(&key, "refund_order", &first, ttl)
+        .await
+        .unwrap();
+    assert_eq!(b.replay_get(&key, ttl).await.unwrap(), Some(first.clone()));
+
+    // A second write under the same key keeps the first answer: the caller
+    // already has it, and a retry must keep getting the same one.
+    let second = serde_json::json!({ "refund_id": "different" });
+    b.replay_put(&key, "refund_order", &second, ttl)
+        .await
+        .unwrap();
+    assert_eq!(b.replay_get(&key, ttl).await.unwrap(), Some(first));
+
+    // Past the window it is gone.
+    assert!(b.replay_get(&key, Duration::ZERO).await.unwrap().is_none());
+}

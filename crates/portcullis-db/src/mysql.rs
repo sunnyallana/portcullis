@@ -417,6 +417,96 @@ impl Backend for MySqlBackend {
             .map(|_| ())
             .map_err(|e| Error::Backend(sanitise(&e)))
     }
+
+    async fn supports_shared_state(&self) -> Result<bool> {
+        let row: (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM information_schema.tables              WHERE table_schema = DATABASE()                AND table_name IN ('portcullis_rate', 'portcullis_replay')",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| Error::Backend(sanitise(&e)))?;
+        Ok(row.0 >= 2)
+    }
+
+    async fn rate_check(&self, caller: &str, action: &str, per_minute: u32) -> Result<bool> {
+        let bucket = jiff::Timestamp::now().as_second() / 60;
+        // MySQL has no RETURNING, so the upsert and the read share one
+        // connection: another replica must not slip between them.
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| Error::Backend(sanitise(&e)))?;
+
+        sqlx::query(
+            "INSERT INTO portcullis_rate (caller, action, bucket, hits) VALUES (?, ?, ?, 1)              ON DUPLICATE KEY UPDATE hits = hits + 1",
+        )
+        .bind(caller)
+        .bind(action)
+        .bind(bucket)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| Error::Backend(sanitise(&e)))?;
+
+        let row: (i32,) = sqlx::query_as(
+            "SELECT hits FROM portcullis_rate WHERE caller = ? AND action = ? AND bucket = ?",
+        )
+        .bind(caller)
+        .bind(action)
+        .bind(bucket)
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|e| Error::Backend(sanitise(&e)))?;
+
+        let _ = sqlx::query("DELETE FROM portcullis_rate WHERE bucket < ?")
+            .bind(bucket - 5)
+            .execute(&mut *conn)
+            .await;
+
+        Ok(u32::try_from(row.0).unwrap_or(u32::MAX) <= per_minute)
+    }
+
+    async fn replay_get(&self, key: &str, ttl: Duration) -> Result<Option<serde_json::Value>> {
+        let cutoff =
+            jiff::Timestamp::now().as_second() - i64::try_from(ttl.as_secs()).unwrap_or(i64::MAX);
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT response FROM portcullis_replay WHERE `key` = ? AND at > ?")
+                .bind(key)
+                .bind(cutoff)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| Error::Backend(sanitise(&e)))?;
+        Ok(row.and_then(|(text,)| serde_json::from_str(&text).ok()))
+    }
+
+    async fn replay_put(
+        &self,
+        key: &str,
+        action: &str,
+        response: &serde_json::Value,
+        ttl: Duration,
+    ) -> Result<()> {
+        let now = jiff::Timestamp::now().as_second();
+        // IGNORE rather than overwrite: the first answer is the one the caller
+        // already has, and a retry must keep getting it.
+        sqlx::query(
+            "INSERT IGNORE INTO portcullis_replay (`key`, action, response, at)              VALUES (?, ?, ?, ?)",
+        )
+        .bind(key)
+        .bind(action)
+        .bind(response.to_string())
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| Error::Backend(sanitise(&e)))?;
+
+        let cutoff = now - i64::try_from(ttl.as_secs()).unwrap_or(i64::MAX);
+        let _ = sqlx::query("DELETE FROM portcullis_replay WHERE at < ?")
+            .bind(cutoff)
+            .execute(&self.pool)
+            .await;
+        Ok(())
+    }
 }
 
 type MyQuery<'q> = sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>;

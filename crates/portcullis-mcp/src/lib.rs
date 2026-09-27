@@ -224,7 +224,7 @@ fn initialize(engine: &Engine, params: &Json) -> Json {
 }
 
 fn tools_list(engine: &Engine) -> Json {
-    let tools: Vec<Json> = engine
+    let mut tools: Vec<Json> = engine
         .registry()
         .iter()
         .map(|(name, action)| {
@@ -253,6 +253,27 @@ fn tools_list(engine: &Engine) -> Json {
             })
         })
         .collect();
+
+    // The engine answers this one itself. Without it a model that parked a
+    // write has no way to learn what became of it, because the result goes to
+    // whoever approved it.
+    tools.push(json!({
+        "name": portcullis_engine::engine::STATUS_ACTION,
+        "description": "Check what happened to a call that was held for human approval.                         Takes the request id you were given. Poll this rather than                         retrying the original call.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "request": {
+                    "type": "string",
+                    "description": "The approval request id, for example apr_c31736cb8b"
+                }
+            },
+            "required": ["request"],
+            "additionalProperties": false
+        },
+        "annotations": { "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true },
+    }));
+
     json!({ "tools": tools })
 }
 

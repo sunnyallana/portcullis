@@ -93,7 +93,7 @@ impl IdempotencyStore {
                     continue;
                 }
                 if let Ok(r) = serde_json::from_str::<Record>(&line) {
-                    if r.at >= cutoff {
+                    if r.at > cutoff {
                         seen.insert(r.key, r.response);
                     }
                 }

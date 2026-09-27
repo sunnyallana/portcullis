@@ -22,6 +22,14 @@ use crate::config::{BackendConfig, Config};
 use crate::limits::{IdempotencyStore, RateLimiter};
 use crate::registry::{Action, Registry, Warning, coerce_argument};
 
+/// The one action the engine answers itself rather than looking up.
+///
+/// An approved write returns its result to whoever released it, not to the
+/// agent that asked, so without this a caller has no way to find out what
+/// happened to a request it raised. Reserved: a configured action may not use
+/// this name.
+pub const STATUS_ACTION: &str = "approval_status";
+
 /// What a successful call produced.
 #[derive(Debug, Clone)]
 pub struct CallResult {
@@ -81,6 +89,56 @@ impl CallResult {
     }
 }
 
+/// Where rate limits and replay keys are kept.
+///
+/// Local state is per process, so two replicas enforce a limit twice over.
+/// Database state is shared, at the cost of a round trip per check and a
+/// fixed one-minute window instead of a sliding one.
+#[derive(Debug)]
+enum SharedState {
+    Local {
+        limiter: RateLimiter,
+        replay: IdempotencyStore,
+    },
+    Database {
+        backend: Arc<dyn Backend>,
+        ttl: Duration,
+    },
+}
+
+impl SharedState {
+    async fn rate_ok(&self, caller: &str, action: &str, per_minute: Option<u32>) -> Result<bool> {
+        let Some(limit) = per_minute else {
+            return Ok(true);
+        };
+        match self {
+            Self::Local { limiter, .. } => Ok(limiter.check(caller, action, Some(limit))),
+            Self::Database { backend, .. } => backend.rate_check(caller, action, limit).await,
+        }
+    }
+
+    async fn replay_get(&self, key: &str) -> Result<Option<serde_json::Value>> {
+        match self {
+            Self::Local { replay, .. } => Ok(replay.get(key)),
+            Self::Database { backend, ttl } => backend.replay_get(key, *ttl).await,
+        }
+    }
+
+    async fn replay_put(
+        &self,
+        key: &str,
+        action: &str,
+        response: &serde_json::Value,
+    ) -> Result<()> {
+        match self {
+            Self::Local { replay, .. } => replay.put(key, action, response),
+            Self::Database { backend, ttl } => {
+                backend.replay_put(key, action, response, *ttl).await
+            }
+        }
+    }
+}
+
 /// A configured, validated deployment.
 #[derive(Debug)]
 pub struct Engine {
@@ -90,8 +148,7 @@ pub struct Engine {
     schema: Schema,
     audit: AuditLog,
     approvals: ApprovalStore,
-    idempotency: IdempotencyStore,
-    limiter: RateLimiter,
+    state: SharedState,
 }
 
 impl Engine {
@@ -152,12 +209,31 @@ impl Engine {
 
         let schema = backend.schema().await?;
         let (registry, warnings) = Registry::build(&config, &schema)?;
-        let audit = AuditLog::open(&config.audit.path, config.audit.fsync)?;
+        let audit = AuditLog::open(&config.audit.path, config.audit.fsync, config.audit.rotate)?;
         let approvals = ApprovalStore::open(&config.approvals.path, config.approvals.ttl)?;
-        let idempotency = IdempotencyStore::open(
-            config.audit.path.with_extension("idempotency.jsonl"),
-            config.limits.idempotency_ttl,
-        )?;
+        let state = match config.limits.store {
+            crate::config::LimitStore::Local => SharedState::Local {
+                limiter: RateLimiter::new(),
+                replay: IdempotencyStore::open(
+                    config.audit.path.with_extension("idempotency.jsonl"),
+                    config.limits.idempotency_ttl,
+                )?,
+            },
+            crate::config::LimitStore::Database => {
+                // Fail here rather than at the first write: a deployment that
+                // asked for shared limits and silently got per-process ones is
+                // worse than one that refuses to start.
+                if !backend.supports_shared_state().await? {
+                    return Err(Error::Config(
+                        "[limits] store = \"database\" needs the shared-state tables; run examples/shared-state-postgres.sql or examples/shared-state-mysql.sql, or set store = \"local\"".into(),
+                    ));
+                }
+                SharedState::Database {
+                    backend: Arc::clone(&backend),
+                    ttl: config.limits.idempotency_ttl,
+                }
+            }
+        };
 
         Ok((
             Self {
@@ -167,8 +243,7 @@ impl Engine {
                 schema,
                 audit,
                 approvals,
-                idempotency,
-                limiter: RateLimiter::new(),
+                state,
             },
             warnings,
         ))
@@ -214,6 +289,11 @@ impl Engine {
         self.audit.flush()
     }
 
+    /// Close the current audit segment and start a new one.
+    pub fn rotate_audit(&self) -> Result<()> {
+        self.audit.rotate_now()
+    }
+
     /// Build a caller for a configured role.
     pub fn caller(&self, role: &str, id: &str) -> Result<Caller> {
         let r = self.config.role(role).ok_or_else(|| {
@@ -251,6 +331,11 @@ impl Engine {
         let result = self
             .dispatch(&approval.action, &approval.args, &caller, Some(&approval))
             .await;
+        if let Ok(done) = &result {
+            // The agent that raised this is not listening; leave the outcome
+            // where it can collect it.
+            let _ = self.approvals.record_result(id, &done.to_json());
+        }
         if result.is_err() {
             // The claim already consumed the request; record why it failed so
             // the log does not simply show an executed approval with no effect.
@@ -291,6 +376,71 @@ impl Engine {
         Ok(approval)
     }
 
+    /// Report on a parked call to the caller that raised it.
+    ///
+    /// Visible to the requester and to anyone who could decide it, and to
+    /// nobody else: a request id is not a capability, but the arguments inside
+    /// it may be sensitive.
+    fn answer_status(&self, args: &serde_json::Value, caller: &Caller) -> Result<Rows> {
+        let id = args
+            .get("request")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| Error::BadArgument {
+                param: "request".into(),
+                problem: "is required; it is the id returned when the call was parked".into(),
+            })?;
+
+        let approval = self
+            .approvals
+            .get(id)
+            .ok_or_else(|| Error::Approval(format!("no approval request `{id}`")))?;
+
+        let mine = approval.caller.id == caller.id;
+        if !mine && self.may_decide(&approval, caller).is_err() {
+            // Same answer as a request that does not exist, so the id cannot
+            // be used to probe for other people's calls.
+            return Err(Error::Approval(format!("no approval request `{id}`")));
+        }
+
+        let status = match approval.status {
+            Status::Pending if approval.is_expired(self.config.approvals.ttl) => "expired",
+            Status::Pending => "pending",
+            Status::Executed => "executed",
+            Status::Denied => "denied",
+            Status::Expired => "expired",
+        };
+
+        let mut columns = vec![
+            "request".to_string(),
+            "action".to_string(),
+            "status".to_string(),
+            "raised".to_string(),
+        ];
+        let mut row = vec![
+            Value::Text(approval.id.clone()),
+            Value::Text(approval.action.clone()),
+            Value::Text(status.to_owned()),
+            Value::Text(approval.created.clone()),
+        ];
+        if let Some(decided) = &approval.decided {
+            columns.push("decided".to_string());
+            row.push(Value::Text(decided.clone()));
+        }
+        if let Some(by) = &approval.decided_by {
+            columns.push("decided_by".to_string());
+            row.push(Value::Text(by.clone()));
+        }
+        if let Some(result) = &approval.result {
+            columns.push("result".to_string());
+            row.push(Value::Json(result.clone()));
+        }
+
+        Ok(Rows {
+            columns,
+            rows: vec![row],
+        })
+    }
+
     /// May this caller decide that request?
     ///
     /// Two separate rules. A deployment can restrict approving to named roles,
@@ -327,6 +477,37 @@ impl Engine {
         let started = Instant::now();
         let request_id = uuid::Uuid::new_v4().to_string();
 
+        if action_name == STATUS_ACTION {
+            let answer = self.answer_status(args, caller);
+            self.record(
+                action_name,
+                caller,
+                args,
+                if answer.is_ok() {
+                    Decision::Allowed
+                } else {
+                    Decision::Denied
+                },
+                0,
+                started.elapsed(),
+                answer.as_ref().err().map(|e| e.code().to_owned()),
+                args.get("request")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned),
+                &request_id,
+            );
+            return answer.map(|rows| CallResult {
+                action: action_name.to_owned(),
+                kind: ActionKind::Read,
+                request_id,
+                rows,
+                rows_affected: 0,
+                truncated: false,
+                replayed: false,
+                duration: started.elapsed(),
+            });
+        }
+
         let Some(action) = self.registry.get(action_name) else {
             let names = self.registry.names();
             let hint = did_you_mean(action_name, &names)
@@ -357,8 +538,10 @@ impl Engine {
         }
 
         if !self
-            .limiter
-            .check(&caller.id, action_name, action.spec.rate_limit)
+            .state
+            .rate_ok(&caller.id, action_name, action.spec.rate_limit)
+            .await
+            .unwrap_or(true)
         {
             self.record(
                 action_name,
@@ -422,7 +605,7 @@ impl Engine {
         // Replay protection for writes.
         let idem_key = idempotency_key(action, caller, &values);
         if let Some(key) = &idem_key {
-            if let Some(previous) = self.idempotency.get(key) {
+            if let Some(previous) = self.state.replay_get(key).await? {
                 self.record(
                     action_name,
                     caller,
@@ -535,8 +718,9 @@ impl Engine {
         };
 
         if let Some(key) = &idem_key {
-            self.idempotency
-                .put(key, action_name, &result.rows.to_json())?;
+            self.state
+                .replay_put(key, action_name, &result.rows.to_json())
+                .await?;
         }
 
         self.record(

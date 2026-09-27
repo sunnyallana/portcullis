@@ -16,7 +16,7 @@ pub mod value;
 mod error;
 mod hex;
 
-pub use audit::{AuditLog, AuditRecord, Decision, Fsync};
+pub use audit::{AuditLog, AuditRecord, Decision, Fsync, Rotate, Seal};
 pub use branding::{BIN, NAME};
 pub use caller::Caller;
 pub use error::{Error, Result};

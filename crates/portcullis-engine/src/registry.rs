@@ -97,6 +97,9 @@ impl Registry {
     }
 }
 
+/// Names the engine answers itself, which a configuration may not take over.
+const RESERVED: &[&str] = &[crate::engine::STATUS_ACTION];
+
 fn err(action: &str, problem: impl Into<String>) -> Error {
     Error::Validation {
         action: action.to_owned(),
@@ -108,6 +111,13 @@ fn err(action: &str, problem: impl Into<String>) -> Error {
 fn validate(spec: &ActionSpec, schema: &Schema, config: &Config) -> Result<(Action, Vec<Warning>)> {
     let name = spec.name.as_str();
     let mut warnings = Vec::new();
+
+    if RESERVED.contains(&name) {
+        return Err(err(
+            name,
+            "this name is reserved: the engine answers it itself so that a caller can              check on a request it had parked",
+        ));
+    }
 
     if schema.is_ambiguous(&spec.table) {
         return Err(err(

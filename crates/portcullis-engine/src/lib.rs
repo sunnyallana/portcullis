@@ -13,7 +13,7 @@ pub mod registry;
 pub mod replay;
 
 pub use approvals::{Approval, ApprovalStore, Status};
-pub use config::{BackendConfig, Config, Limits, Role};
+pub use config::{BackendConfig, Config, LimitStore, Limits, Role};
 pub use engine::{CallResult, Engine};
 pub use profile::{Classification, ColumnProfile, Profile, TableProfile};
 pub use registry::{Action, Registry, Warning};
