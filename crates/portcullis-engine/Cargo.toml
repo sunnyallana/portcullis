@@ -11,6 +11,7 @@ description = "Portcullis engine: configuration, action validation, policy and t
 default = ["postgres"]
 postgres = ["portcullis-db/postgres"]
 mysql = ["portcullis-db/mysql"]
+mssql = ["portcullis-db/mssql"]
 
 [lints]
 workspace = true

@@ -194,6 +194,81 @@ GRANT SELECT ON app.orders TO 'portcullis'@'%';
 GRANT INSERT ON app.refunds TO 'portcullis'@'%';
 ```
 
+## Pointing at SQL Server
+
+SQL Server needs a feature flag. It does not go through `sqlx` — MSSQL support
+was dropped after 0.6 — so it carries its own driver and pool, and the default
+build leaves it out to stay small and statically linkable.
+
+```sh
+cargo build --release --features mssql
+```
+
+```toml
+[backend]
+kind = "sqlserver"
+dsn = "env:MSSQL_URL"
+schemas = ["dbo"]
+max_connections = 10
+```
+
+The DSN is ADO-style rather than a URL:
+
+```
+Server=tcp:db.example.com,1433;User Id=portcullis;Password=…;Database=app;Encrypt=true
+```
+
+**Set `Encrypt=true`.** Left out, the driver encrypts the login and then drops
+TLS for everything after it, and logs a warning saying so. Add
+`TrustServerCertificate=true` only against a server with a self-signed
+certificate, which in practice means a test container.
+
+`examples/orders-sqlserver.toml` and `examples/sqlserver-schema.sql` are the
+same demo against SQL Server. Three differences to know:
+
+- `uniqueidentifier` is a real UUID type, so declare those parameters `uuid`
+  rather than the `CHAR(36)` text MySQL needs.
+- There is no `RETURNING`, and no `LAST_INSERT_ID()` fallback either. An action
+  with `returning` must supply the primary key in `write.columns`; one that
+  leaves the key to an `IDENTITY` column is told so rather than handed the
+  wrong row.
+- `mode = "upsert"` is refused. `MERGE` is a different statement shape and the
+  naive `IF EXISTS … UPDATE ELSE INSERT` races, so an upsert that occasionally
+  writes twice is not offered.
+
+Grants, as for the others:
+
+```sql
+CREATE LOGIN portcullis WITH PASSWORD = '…';
+CREATE USER portcullis FOR LOGIN portcullis;
+GRANT SELECT ON dbo.orders TO portcullis;
+GRANT INSERT ON dbo.refunds TO portcullis;
+```
+
+To try it locally:
+
+```sh
+docker run -d --name portcullis-mssql -e ACCEPT_EULA=Y \
+  -e MSSQL_SA_PASSWORD=Portcullis-test1 -e MSSQL_PID=Developer \
+  -p 21433:1433 mcr.microsoft.com/mssql/server:2022-latest
+
+# The runner needs no sqlcmd of its own; the tools image has one.
+SQLCMD="docker run --rm --network host -v $PWD/examples:/examples:ro \
+  mcr.microsoft.com/mssql-tools:latest /opt/mssql-tools/bin/sqlcmd \
+  -S localhost,21433 -U sa -P Portcullis-test1 -b"
+$SQLCMD -Q "CREATE DATABASE portcullis"
+$SQLCMD -d portcullis -i /examples/sqlserver-schema.sql
+
+PORTCULLIS_TEST_MSSQL_DSN="Server=tcp:localhost,21433;User Id=sa;Password=Portcullis-test1;Database=portcullis;TrustServerCertificate=true" \
+  cargo test -p portcullis-db --features mssql --test mssql_live
+```
+
+The published container image does **not** include SQL Server support. It is
+built with the default features, which are PostgreSQL and MySQL, and the
+`mssql` feature has not been built against musl. Use a native binary built
+with `--features mssql`, or add the feature to the Dockerfile's `cargo build`
+and build your own image.
+
 ## Serving over stdio
 
 ```sh
@@ -460,8 +535,11 @@ before the migration goes out.
 | `row_filter needs $caller.region, but role Y does not define it` | Add the attribute to that role, or remove it from its `allow` list |
 | Every call returns no rows | The role's attributes do not match any data. Check with `portcullis call --role …` |
 | `no database connection was free within the pool timeout` | Raise `max_connections`, or find the slow action with `portcullis audit tail` |
-| A column is missing from `returns` validation | Its type is not modelled (arrays, ranges and custom types on PostgreSQL; blobs and spatial types on MySQL) |
+| A column is missing from `returns` validation | Its type is not modelled (arrays, ranges and custom types on PostgreSQL; blobs and spatial types on MySQL; `varbinary`, `xml` and `geography` on SQL Server) |
 | `401` with `WWW-Authenticate: Bearer` | No token, or one this server will not accept. `portcullis_auth_failures_total` says which |
 | `403` on every HTTP call | The token's role claim maps to nothing this deployment defines. Check `role_map` |
 | `403` when approving | `approver_roles`, or the requester trying to release their own request |
 | MySQL: "cannot return them" | The action asks for `returning` from a table with no primary key the write supplies |
+| "this build has no SQL Server support" | The binary was built without `--features mssql` |
+| "Turning TLS off after a login" | `Encrypt=true` is missing from the SQL Server DSN |
+| "SQL Server upserts are not implemented" | Use `mode = "insert"` or `"update"`; `MERGE` is not compiled |

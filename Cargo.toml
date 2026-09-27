@@ -35,6 +35,11 @@ jsonwebtoken = { version = "11", default-features = false, features = ["rust_cry
 # Native roots so an internal CA in the OS trust store is picked up.
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "rustls-native-certs"] }
 tower = "0.5"
+# SQL Server. sqlx dropped MSSQL after 0.6, so this is a separate driver
+# stack. rustls rather than native-tls keeps the static musl build working.
+tiberius = { version = "0.12.3", default-features = false, features = ["tds73", "rustls", "chrono", "rust_decimal"] }
+deadpool-tiberius = { version = "0.1.9", default-features = false, features = ["tds73", "rustls", "chrono", "rust_decimal"] }
+
 clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }
 indexmap = { version = "2.14", features = ["serde"] }
 jiff = { version = "0.2", features = ["serde"] }

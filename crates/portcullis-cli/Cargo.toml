@@ -15,6 +15,9 @@ path = "src/main.rs"
 default = ["postgres", "mysql"]
 postgres = ["portcullis-engine/postgres"]
 mysql = ["portcullis-engine/mysql"]
+# Opt-in: a second driver stack, and the default build stays statically
+# linkable without it.
+mssql = ["portcullis-engine/mssql"]
 
 [lints]
 workspace = true

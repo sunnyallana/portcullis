@@ -22,9 +22,18 @@ pub trait Dialect: fmt::Debug + Send + Sync {
     /// The `ON CONFLICT` / `ON DUPLICATE KEY` clause for an upsert.
     fn upsert_clause(&self, keys: &[String], updates: &[String]) -> Result<String>;
 
-    /// Row-limiting clause.
+    /// Row-limiting clause, appended after `ORDER BY`.
     fn limit_clause(&self, rows: u32) -> String {
         format!("LIMIT {rows}")
+    }
+
+    /// Row-limiting text that goes straight after `SELECT` instead.
+    ///
+    /// T-SQL puts the limit at the front as `TOP (n)`, and its `OFFSET/FETCH`
+    /// form needs an `ORDER BY` that an action may not have. Dialects that
+    /// limit at the end return nothing here.
+    fn row_limit_prefix(&self, _rows: u32) -> String {
+        String::new()
     }
 
     /// Whether `INSERT ... RETURNING` is available.
@@ -136,6 +145,49 @@ impl Dialect for MySql {
     }
 }
 
+/// Microsoft SQL Server.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SqlServer;
+
+impl Dialect for SqlServer {
+    fn name(&self) -> &'static str {
+        "sqlserver"
+    }
+
+    fn quote_part(&self, part: &str) -> String {
+        format!("[{part}]")
+    }
+
+    fn placeholder(&self, index: usize) -> String {
+        format!("@P{index}")
+    }
+
+    fn upsert_clause(&self, _keys: &[String], _updates: &[String]) -> Result<String> {
+        // T-SQL spells this `MERGE`, which is a different statement shape
+        // rather than a suffix on an insert, and a naive
+        // `IF EXISTS … UPDATE ELSE INSERT` races. Refused rather than
+        // implemented badly: an upsert that sometimes writes twice is worse
+        // than one that is not offered.
+        Err(Error::Backend(
+            "SQL Server upserts are not implemented; use mode = \"insert\" or \"update\"".into(),
+        ))
+    }
+
+    fn limit_clause(&self, _rows: u32) -> String {
+        String::new()
+    }
+
+    fn row_limit_prefix(&self, rows: u32) -> String {
+        format!("TOP ({rows}) ")
+    }
+
+    fn supports_returning(&self) -> bool {
+        // It has OUTPUT INSERTED, but that sits mid-statement rather than at
+        // the end, so the backend reads the row back instead.
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +205,30 @@ mod tests {
         for bad in ["orders\"; drop table x --", "orders-1", "", "a..b"] {
             assert!(Postgres.quote(bad).is_err(), "{bad} should be refused");
         }
+    }
+
+    #[test]
+    fn sqlserver_brackets_identifiers_and_numbers_its_placeholders() {
+        assert_eq!(SqlServer.quote("dbo.orders").unwrap(), "[dbo].[orders]");
+        assert_eq!(SqlServer.placeholder(1), "@P1");
+        assert_eq!(SqlServer.placeholder(12), "@P12");
+        assert!(SqlServer.quote("orders]; DROP TABLE x --").is_err());
+    }
+
+    #[test]
+    fn sqlserver_limits_at_the_front_not_the_end() {
+        assert_eq!(SqlServer.row_limit_prefix(50), "TOP (50) ");
+        assert_eq!(SqlServer.limit_clause(50), "");
+        assert_eq!(Postgres.row_limit_prefix(50), "");
+        assert_eq!(Postgres.limit_clause(50), "LIMIT 50");
+    }
+
+    #[test]
+    fn sqlserver_refuses_an_upsert_rather_than_racing() {
+        let err = SqlServer
+            .upsert_clause(&["id".into()], &["note".into()])
+            .unwrap_err();
+        assert!(format!("{err}").contains("not implemented"), "{err}");
     }
 
     #[test]

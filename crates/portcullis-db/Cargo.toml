@@ -11,6 +11,9 @@ description = "Portcullis backends: pooled PostgreSQL, plus an in-memory backend
 default = ["postgres"]
 postgres = ["dep:sqlx", "dep:chrono", "sqlx?/postgres"]
 mysql = ["dep:sqlx", "dep:chrono", "sqlx?/mysql"]
+# Not on by default: it is a second driver stack, and the default build stays
+# small and statically linkable without it.
+mssql = ["dep:tiberius", "dep:deadpool-tiberius", "dep:chrono"]
 
 [lints]
 workspace = true
@@ -28,6 +31,8 @@ tokio = { workspace = true }
 uuid.workspace = true
 chrono = { version = "0.4", optional = true, default-features = false, features = ["std", "clock"] }
 sqlx = { workspace = true, optional = true }
+tiberius = { workspace = true, optional = true }
+deadpool-tiberius = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread"] }

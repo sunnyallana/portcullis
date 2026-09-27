@@ -1,11 +1,14 @@
 //! Database backends.
 //!
 //! A backend owns its connections, reports the live schema and executes plans.
-//! Three ship with Portcullis: PostgreSQL and MySQL over pooled connections, and
+//! Four ship with Portcullis: PostgreSQL, MySQL and SQL Server over pooled
+//! connections, and
 //! an in-memory backend used by the test suite and by `portcullis init` so the
 //! product can be tried without provisioning anything.
 
 pub mod memory;
+#[cfg(feature = "mssql")]
+pub mod mssql;
 #[cfg(feature = "mysql")]
 pub mod mysql;
 pub mod plan;
@@ -19,6 +22,8 @@ use async_trait::async_trait;
 use portcullis_core::{Result, Schema};
 
 pub use memory::MemoryBackend;
+#[cfg(feature = "mssql")]
+pub use mssql::MsSqlBackend;
 #[cfg(feature = "mysql")]
 pub use mysql::MySqlBackend;
 pub use plan::{ExecCtx, ReadPlan, Rows, WriteOutcome, WritePlan};

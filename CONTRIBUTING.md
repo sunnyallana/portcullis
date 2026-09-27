@@ -118,9 +118,14 @@ cargo deny check
 ```
 
 The database backends have integration tests that skip unless a server is
-configured; the README has the two `docker run` lines. CI runs them against
-real PostgreSQL and MySQL, so a backend change that passes locally without
-them has not been tested.
+configured; the README has the `docker run` lines for all three. CI runs them
+against real PostgreSQL, MySQL and SQL Server, so a backend change that passes
+locally without them has not been tested.
+
+SQL Server is not a default feature and does not go through `sqlx`, so
+`--all-features` is the only invocation that compiles it. A change to the
+`Dialect` trait or to `portcullis-sql::write` that builds without it may still
+be broken there.
 
 ## Adding a test that catches a regression
 

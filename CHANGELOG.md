@@ -3,6 +3,14 @@
 ## Unreleased
 
 ### Added
+- **SQL Server backend**, behind `--features mssql`. It does not go through
+  `sqlx`, which dropped MSSQL after 0.6, so it carries `tiberius` and its own
+  pool: `@P1` placeholders, `[bracket]` quoting, `TOP (n)` at the front of the
+  projection rather than `LIMIT` at the end (T-SQL's `OFFSET/FETCH` needs an
+  `ORDER BY` an action may not have), and the written row read back by primary
+  key because there is no `RETURNING`. Upserts are refused rather than
+  approximated with a racing `IF EXISTS`. Verified against SQL Server 2022 in
+  a container, with the live suite in CI.
 - **Versioned action bundles.** Several versions of the action set served at
   once, with aliases, a sticky per-caller canary, and every version validated
   against the live schema at startup. Promotion and rollback are moving an

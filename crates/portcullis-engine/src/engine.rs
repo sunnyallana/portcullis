@@ -196,6 +196,31 @@ impl Engine {
                 })
                 .await?,
             ),
+            #[cfg(feature = "mssql")]
+            BackendConfig::MsSql {
+                dsn,
+                max_connections,
+                schemas,
+            } => Arc::new(
+                // Boxed: the tiberius connect future is large enough that
+                // holding it inline pushes `build` past clippy's threshold,
+                // and `build` is awaited from every command.
+                Box::pin(portcullis_db::MsSqlBackend::connect(
+                    &portcullis_db::mssql::MsSqlConfig {
+                        dsn: dsn.clone(),
+                        max_connections: *max_connections,
+                        acquire_timeout: Duration::from_secs(10),
+                        schemas: schemas.clone(),
+                    },
+                ))
+                .await?,
+            ),
+            #[cfg(not(feature = "mssql"))]
+            BackendConfig::MsSql { .. } => {
+                return Err(Error::Config(
+                    "this build has no SQL Server support; rebuild with the `mssql` feature".into(),
+                ));
+            }
             #[cfg(not(feature = "mysql"))]
             BackendConfig::MySql { .. } => {
                 return Err(Error::Config(

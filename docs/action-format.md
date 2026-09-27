@@ -29,17 +29,25 @@ statement_timeout_secs = 60
 
 | Key | Applies to | Meaning |
 |---|---|---|
-| `kind` | both | `"postgres"`, `"mysql"` or `"memory"` |
-| `dsn` | postgres, mysql | Connection string. Use `env:NAME` or `file:/path` |
-| `schemas` | postgres, mysql | Schemas (MySQL: databases) to expose. Empty means every non-system schema, or the one in the connection string |
-| `max_connections`, `min_connections` | postgres, mysql | Pool bounds |
+| `kind` | all | `"postgres"`, `"mysql"`, `"sqlserver"` (or `"mssql"`) or `"memory"` |
+| `dsn` | databases | Connection string. Use `env:NAME` or `file:/path` |
+| `schemas` | databases | Schemas (MySQL: databases) to expose. Empty means every non-system schema, or the one in the connection string |
+| `max_connections` | databases | Pool ceiling |
+| `min_connections` | postgres, mysql | Pool floor |
 | `statement_timeout_secs` | postgres, mysql | Server-side backstop on every connection |
 | `fixtures` | memory | Path to a JSON fixture (demo and tests only) |
 
+SQL Server is behind a feature flag, because it is a second driver stack rather
+than another dialect: build with `--features mssql`. A binary without it
+refuses a `sqlserver` backend at startup with a message saying so, rather than
+failing at the first query. Its DSN is ADO-style, not a URL:
+`Server=tcp:host,1433;User Id=…;Password=…;Database=…;Encrypt=true`.
+
 Columns whose type Portcullis does not model are left out of the schema: arrays,
 ranges, `tsvector` and custom types on PostgreSQL; blobs, spatial and bit types
-on MySQL. An action that names one fails validation rather than returning a
-mis-decoded value.
+on MySQL; `varbinary`, `xml`, `geography` and `hierarchyid` on SQL Server. An
+action that names one fails validation rather than returning a mis-decoded
+value.
 
 MySQL has no UUID type and no `RETURNING`. Model a UUID column as `CHAR(36)`
 and declare the parameter `text`. When an action asks for `returning`, the
@@ -47,6 +55,14 @@ backend re-selects the row on the same connection using the primary key values
 the write supplied, or `LAST_INSERT_ID()` for a single auto-increment key; if
 neither is available the action fails validation at first use with a message
 saying so.
+
+SQL Server has no `RETURNING` either, and the same re-select applies, except
+there is no `LAST_INSERT_ID()` equivalent this backend uses: the write must
+supply the primary key itself. It does have a real `uniqueidentifier`, so
+declare those parameters `uuid`. What it does not have is an upsert this
+backend implements. `MERGE` is a different statement shape and the naive
+`IF EXISTS … UPDATE ELSE INSERT` races, so `mode = "upsert"` is refused rather
+than approximated. Use `insert` or `update`.
 
 ## `[audit]`
 

@@ -12,5 +12,5 @@ pub mod expr;
 pub use build::{
     Binder, ReadQuery, Statement, WriteQuery, compile_expr, conjunct_equalities, select, write,
 };
-pub use dialect::{Dialect, MySql, Postgres};
+pub use dialect::{Dialect, MySql, Postgres, SqlServer};
 pub use expr::{CmpOp, Expr, Term, parse_term};

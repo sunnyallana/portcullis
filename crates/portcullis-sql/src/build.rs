@@ -197,7 +197,11 @@ pub fn select(q: &ReadQuery, dialect: &dyn Dialect, binder: &mut Binder) -> Resu
         .map(|c| dialect.quote(c))
         .collect::<Result<Vec<_>>>()?
         .join(", ");
-    let mut sql = format!("SELECT {cols} FROM {}", dialect.quote(q.table)?);
+    let mut sql = format!(
+        "SELECT {}{cols} FROM {}",
+        dialect.row_limit_prefix(q.limit),
+        dialect.quote(q.table)?
+    );
 
     // The row filter is compiled first so that it always contributes, and is
     // AND-ed with the operator filter rather than being merged into it.
@@ -231,8 +235,11 @@ pub fn select(q: &ReadQuery, dialect: &dyn Dialect, binder: &mut Binder) -> Resu
         sql.push_str(&terms);
     }
 
-    sql.push(' ');
-    sql.push_str(&dialect.limit_clause(q.limit));
+    let limit = dialect.limit_clause(q.limit);
+    if !limit.is_empty() {
+        sql.push(' ');
+        sql.push_str(&limit);
+    }
 
     let binds = std::mem::take(&mut binder.binds);
     Ok(Statement { sql, binds })

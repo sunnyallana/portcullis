@@ -92,6 +92,15 @@ pub enum BackendConfig {
         /// Server-side statement timeout backstop.
         statement_timeout: Duration,
     },
+    /// Microsoft SQL Server.
+    MsSql {
+        /// Resolved ADO connection string.
+        dsn: String,
+        /// Pool ceiling.
+        max_connections: usize,
+        /// Schemas to expose; empty means every non-system schema.
+        schemas: Vec<String>,
+    },
     /// In-memory fixture, for `portcullis demo` and tests.
     Memory {
         /// Path to the fixture file.
@@ -436,6 +445,15 @@ impl Config {
                     raw.backend.statement_timeout_secs.unwrap_or(60),
                 ),
             },
+            "sqlserver" | "mssql" => BackendConfig::MsSql {
+                dsn: resolve_secret(raw.backend.dsn.as_deref(), base_dir)?.ok_or_else(|| {
+                    Error::Config(
+                        "[backend] kind = \"sqlserver\" needs a `dsn`; use `env:DATABASE_URL` to keep it out of the file".into(),
+                    )
+                })?,
+                max_connections: raw.backend.max_connections.unwrap_or(10) as usize,
+                schemas: raw.backend.schemas.clone(),
+            },
             "memory" => BackendConfig::Memory {
                 fixtures: resolve_path(
                     raw.backend.fixtures.as_deref().ok_or_else(|| {
@@ -446,7 +464,7 @@ impl Config {
             },
             other => {
                 return Err(Error::Config(format!(
-                    "[backend] kind = \"{other}\" is not supported; use \"postgres\", \"mysql\" or \"memory\""
+                    "[backend] kind = \"{other}\" is not supported; use \"postgres\", \"mysql\", \"sqlserver\" or \"memory\""
                 )));
             }
         };
