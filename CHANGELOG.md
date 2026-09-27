@@ -28,6 +28,16 @@ deployment survivable.
   baseline, exiting 3 on a difference. Writes are never replayed.
 - `/healthz`, `/readyz` and Prometheus `/metrics`; graceful shutdown.
 - The audit record now carries the caller's scope.
+- **Delivery.** A `distroless/static` container image of about 6 MB built from
+  a static musl binary, and a release pipeline producing archives for Linux
+  musl, macOS arm64 and Windows. Every artifact is smoke tested before it
+  ships, including the image.
+- **Supply chain.** Images signed with cosign keyless, build provenance
+  attested for the image and every artifact, and a CycloneDX SBOM in each
+  release. cosign is pinned and checksum-verified rather than installed
+  through a third-party action.
+- **Offline bundle.** `portcullis-v<version>-airgap.tar.gz` carries the image,
+  the binary, the SBOM, the docs and checksums for hosts with no network.
 
 ### Changed
 - `Engine::approve` and `Engine::deny` take a `Caller` rather than a name, so

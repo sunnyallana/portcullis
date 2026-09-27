@@ -1,19 +1,26 @@
 name: Release
 
 # Tagging is the trigger, so a release is always a commit someone chose.
-# workflow_dispatch builds the artifacts without publishing, which is how you
-# find out the pipeline works before you cut a real tag.
+# workflow_dispatch signs and publishes nothing but produces every artifact,
+# which is how you find out the pipeline works before cutting a real tag.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
 
 permissions:
-  contents: write   # create the release
-  packages: write   # push to ghcr.io
+  contents: write      # create the release
+  packages: write      # push to ghcr.io
+  id-token: write      # keyless signing and provenance, no key to manage
+  attestations: write  # record provenance against the repository
 
 env:
   CARGO_TERM_COLOR: always
+  # Pinned by version and verified by checksum rather than installed through a
+  # third-party action. The tool that proves our provenance should not itself
+  # arrive unverified.
+  COSIGN_VERSION: v3.1.3
+  COSIGN_SHA256: 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
 
 jobs:
   # A tag that disagrees with Cargo.toml produces a release whose binaries
@@ -77,28 +84,6 @@ jobs:
         shell: bash
         run: cargo build --release --locked --target ${{ matrix.target }} --bin portcullis
 
-      - name: Package
-        shell: bash
-        run: |
-          version="${{ needs.version.outputs.version }}"
-          name="portcullis-v${version}-${{ matrix.target }}"
-          mkdir -p "dist/$name"
-          if [ "${{ matrix.archive }}" = "zip" ]; then
-            cp "target/${{ matrix.target }}/release/portcullis.exe" "dist/$name/"
-          else
-            cp "target/${{ matrix.target }}/release/portcullis" "dist/$name/"
-          fi
-          cp README.md CHANGELOG.md CONTRIBUTING.md "dist/$name/"
-          cp -r docs examples "dist/$name/"
-          cd dist
-          if [ "${{ matrix.archive }}" = "zip" ]; then
-            7z a -tzip "$name.zip" "$name" > /dev/null
-          else
-            tar czf "$name.tar.gz" "$name"
-          fi
-          rm -rf "$name"
-          ls -l
-
       # The binary has to actually run. A release that ships something the
       # runner could build but not execute is worse than no release.
       - name: Smoke test
@@ -113,9 +98,73 @@ jobs:
             --action find_order --arg order_no=8812 --role support_eu --caller ci --json
           "$bin" audit verify --config ./smoke/portcullis.toml
 
+      - name: Package
+        shell: bash
+        run: |
+          version="${{ needs.version.outputs.version }}"
+          name="portcullis-v${version}-${{ matrix.target }}"
+          mkdir -p dist "staging/$name"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            cp "target/${{ matrix.target }}/release/portcullis.exe" "staging/$name/"
+          else
+            cp "target/${{ matrix.target }}/release/portcullis" "staging/$name/"
+          fi
+          cp README.md CHANGELOG.md CONTRIBUTING.md "staging/$name/"
+          cp -r docs examples "staging/$name/"
+          cd staging
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            7z a -tzip "../dist/$name.zip" "$name" > /dev/null
+          else
+            tar czf "../dist/$name.tar.gz" "$name"
+          fi
+          ls -l ../dist
+
+      # The Linux binary also travels into the offline bundle on its own, so an
+      # air-gapped host can install it without unpacking an archive first.
+      - name: Keep the bare Linux binary
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: cp target/${{ matrix.target }}/release/portcullis dist/portcullis-linux-x86_64
+
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}
+          name: binaries-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  sbom:
+    name: SBOM
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-cyclonedx --locked
+
+      # One SBOM for the shipped binary, with every feature on so nothing a
+      # build could include is missing from it.
+      - name: Generate
+        run: |
+          cargo cyclonedx --format json --all-features --describe binaries
+          mkdir -p dist
+          cp crates/portcullis-cli/portcullis_bin.cdx.json \
+             "dist/portcullis-v${{ needs.version.outputs.version }}.cdx.json"
+
+      # An SBOM listing three components means the generator silently failed.
+      - name: Sanity check
+        run: |
+          python3 - <<'EOF'
+          import json, pathlib, sys
+          p = next(pathlib.Path("dist").glob("*.cdx.json"))
+          doc = json.loads(p.read_text())
+          count = len(doc.get("components", []))
+          print(f"{count} components in {p.name}")
+          if count < 50:
+              sys.exit("too few components; the SBOM is probably wrong")
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
           path: dist/*
           if-no-files-found: error
 
@@ -123,45 +172,87 @@ jobs:
     name: container image
     needs: version
     runs-on: ubuntu-latest
+    env:
+      REPO: ghcr.io/${{ github.repository_owner }}/portcullis
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Log in to ghcr.io
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-
       - name: Build
-        run: |
-          version="${{ needs.version.outputs.version }}"
-          repo="ghcr.io/${{ github.repository_owner }}/portcullis"
-          docker build -t "${repo}:${version}" -t "${repo}:latest" .
-          echo "repo=$repo" >> "$GITHUB_ENV"
-          echo "version=$version" >> "$GITHUB_ENV"
+        run: docker build -t "$REPO:$VERSION" -t "$REPO:latest" .
 
       # distroless has no shell, so the only way to prove the image works is to
-      # run the binary in it.
+      # run the binary inside it.
       - name: Smoke test the image
         run: |
-          docker run --rm "${repo}:${version}" --version
-          # The image runs as nonroot and its only writable path is the volume,
-          # so give it a host directory owned by the runner's user.
+          docker run --rm "$REPO:$VERSION" --version
+          # It runs as nonroot and its only writable path is the volume, so
+          # give it a host directory owned by the runner's user.
           mkdir -p smoke
-          run() { docker run --rm --user "$(id -u):$(id -g)"                     -v "$PWD/smoke:/var/lib/portcullis" "${repo}:${version}" "$@"; }
+          run() { docker run --rm --user "$(id -u):$(id -g)" \
+                    -v "$PWD/smoke:/var/lib/portcullis" "$REPO:$VERSION" "$@"; }
           run init /var/lib/portcullis
           run validate --config /var/lib/portcullis/portcullis.toml
           run audit verify --config /var/lib/portcullis/portcullis.toml
-          echo "image size: $(docker image inspect "${repo}:${version}" --format '{{.Size}}' | numfmt --to=iec)"
+          echo "image size: $(docker image inspect "$REPO:$VERSION" --format '{{.Size}}' | numfmt --to=iec)"
+
+      # Saved whether or not this run publishes, so workflow_dispatch still
+      # produces a complete offline bundle to inspect.
+      - name: Save for the offline bundle
+        run: |
+          mkdir -p dist
+          docker save "$REPO:$VERSION" -o dist/portcullis-image.tar
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Log in to ghcr.io
+        if: needs.version.outputs.publish == 'true'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Push
+        id: push
         if: needs.version.outputs.publish == 'true'
         run: |
-          docker push "${repo}:${version}"
-          docker push "${repo}:latest"
+          docker push "$REPO:$VERSION"
+          docker push "$REPO:latest"
+          digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$REPO:$VERSION" | cut -d@ -f2)
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "pushed $REPO@$digest"
+
+      - name: Install cosign
+        if: needs.version.outputs.publish == 'true'
+        run: |
+          curl -fsSL -o cosign \
+            "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64"
+          echo "${COSIGN_SHA256}  cosign" | sha256sum -c -
+          chmod +x cosign && sudo mv cosign /usr/local/bin/
+
+      # Keyless: the signing identity is this workflow in this repository, so
+      # there is no private key to store, rotate or lose.
+      - name: Sign the image
+        if: needs.version.outputs.publish == 'true'
+        run: cosign sign --yes "${REPO}@${{ steps.push.outputs.digest }}"
+
+      - name: Attest the image build
+        if: needs.version.outputs.publish == 'true'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REPO }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
 
   publish:
-    name: publish the release
-    needs: [version, binaries, image]
-    if: needs.version.outputs.publish == 'true'
+    name: bundle and publish
+    needs: [version, binaries, sbom, image]
     runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      OWNER: ${{ github.repository_owner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -169,30 +260,78 @@ jobs:
         with:
           path: staging
 
-      - name: Collect and checksum
-        shell: bash
+      - name: Collect
         run: |
           mkdir -p dist
-          find staging -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec mv {} dist/ \;
+          find staging -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.cdx.json' \) \
+            -exec mv {} dist/ \;
+          ls -l dist
+
+      # Everything an offline host needs in one file: the image, the static
+      # binary, the SBOM, the docs, and checksums for all of it.
+      - name: Assemble the offline bundle
+        run: |
+          name="portcullis-v${VERSION}-airgap"
+          mkdir -p "$name"
+          mv staging/image/portcullis-image.tar "$name/"
+          mv staging/binaries-x86_64-unknown-linux-musl/portcullis-linux-x86_64 "$name/portcullis"
+          chmod +x "$name/portcullis"
+          cp "dist/portcullis-v${VERSION}.cdx.json" "$name/portcullis.cdx.json"
+          cp README.md CHANGELOG.md "$name/"
+          cp packaging/airgap-INSTALL.md "$name/INSTALL.md"
+          cp -r docs examples "$name/"
+          ( cd "$name" && sha256sum portcullis-image.tar portcullis portcullis.cdx.json > SHA256SUMS )
+          tar czf "dist/$name.tar.gz" "$name"
+          rm -rf "$name"
+          ls -lh dist
+
+      - name: Checksum every artifact
+        run: |
           cd dist
           sha256sum * > SHA256SUMS
           cat SHA256SUMS
 
-      # The release body is the section of the changelog for this version, so
-      # the notes cannot drift from the file people read in the repository.
-      - name: Extract the changelog section
-        shell: bash
+      # Proves each file came from this workflow at this commit, rather than
+      # from someone's laptop. The client checks it with `gh attestation verify`.
+      - name: Attest the artifacts
+        if: needs.version.outputs.publish == 'true'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'dist/*.tar.gz, dist/*.zip, dist/*.cdx.json'
+
+      # The release body is the changelog section for this version, so the
+      # notes cannot drift from the file people read in the repository.
+      - name: Write the release notes
+        if: needs.version.outputs.publish == 'true'
         run: |
           python3 - <<'EOF' > notes.md
-          import pathlib, re
-          version = "${{ needs.version.outputs.version }}"
+          import os, pathlib, re
+          version = os.environ["VERSION"]
+          owner = os.environ["OWNER"]
           text = pathlib.Path("CHANGELOG.md").read_text()
           match = re.search(rf"^## {re.escape(version)}\b.*?(?=^## |\Z)", text, re.M | re.S)
           print(match.group(0).strip() if match else f"Release {version}.")
+          print(f"""
+          ---
+
+          ### Verifying
+
+          ```sh
+          cosign verify ghcr.io/{owner}/portcullis:{version} \\
+            --certificate-identity-regexp '^https://github\\.com/{owner}/portcullis/' \\
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+          gh attestation verify <artifact> --repo {owner}/portcullis
+          ```
+
+          `portcullis-v{version}-airgap.tar.gz` contains the image, the static
+          binary, the SBOM and the documentation for hosts with no network.
+          """)
           EOF
           cat notes.md
 
       - name: Create the release
+        if: needs.version.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

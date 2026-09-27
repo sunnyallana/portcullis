@@ -19,6 +19,38 @@ docker pull ghcr.io/sunnyallana/portcullis:0.2.0
 The Linux binary is statically linked against musl, so it runs on any glibc or
 musl distribution with no runtime dependencies at all.
 
+### Verifying what you received
+
+Every release is signed and carries build provenance. There is no signing key
+to distribute: the identity is the release workflow in this repository, proved
+through Sigstore.
+
+```sh
+# the container image
+cosign verify ghcr.io/sunnyallana/portcullis:0.2.0 \
+  --certificate-identity-regexp '^https://github\.com/sunnyallana/portcullis/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+# any release artifact: which workflow built it, from which commit
+gh attestation verify portcullis-v0.2.0-x86_64-unknown-linux-musl.tar.gz \
+  --repo sunnyallana/portcullis
+```
+
+A verification that fails is not a formality. It means the artifact did not
+come from this repository's release workflow, and you should not run it.
+
+A CycloneDX SBOM ships with every release as
+`portcullis-v<version>.cdx.json` — around 300 components, each with its
+version and licence — and inside the offline bundle as `portcullis.cdx.json`.
+
+### Air-gapped hosts
+
+`portcullis-v<version>-airgap.tar.gz` holds everything an offline machine
+needs: the container image as a `docker load` tarball, the static binary, the
+SBOM, the documentation, and a `SHA256SUMS` covering all of it. `INSTALL.md`
+inside the bundle walks through verifying, loading and first run without
+network access at any step.
+
 ## The container image
 
 About 6 MB on `distroless/static`. No shell, no package manager, no libc, and
