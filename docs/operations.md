@@ -26,6 +26,29 @@ GRANT INSERT ON public.refunds TO sluice;
 Sluice needs to read `information_schema` for its startup validation, which
 every role can do by default.
 
+### Checking it against a throwaway server first
+
+`examples/postgres-schema.sql` is the demo data as real DDL, so you can try the
+shipped actions against PostgreSQL before pointing anything at production:
+
+```sh
+docker run -d --name sluice-pg -e POSTGRES_PASSWORD=sluice-test \
+           -e POSTGRES_DB=sluice -p 55432:5432 postgres:18
+psql "postgres://postgres:sluice-test@localhost:55432/sluice" \
+     -f examples/postgres-schema.sql
+```
+
+Switch `[backend]` in a copy of `examples/orders.toml` to that DSN and run
+`sluice doctor`. The same container runs the backend integration tests:
+
+```sh
+SLUICE_TEST_DATABASE_URL="postgres://postgres:sluice-test@localhost:55432/sluice" \
+  cargo test -p sluice-db --test postgres_live
+```
+
+Those tests are skipped when the variable is unset, so the ordinary
+`cargo test` needs nothing installed.
+
 ## First run
 
 ```sh

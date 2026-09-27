@@ -160,8 +160,20 @@ Rust 1.85 or newer (edition 2024).
 
 ```sh
 cargo build --release          # ./target/release/sluice
-cargo test --workspace
+cargo test --workspace         # needs nothing installed
 cargo clippy --workspace --all-targets
+```
+
+The PostgreSQL backend has its own integration tests, which run against a real
+server and are skipped unless one is configured:
+
+```sh
+docker run -d --name sluice-pg -e POSTGRES_PASSWORD=sluice-test \
+           -e POSTGRES_DB=sluice -p 55432:5432 postgres:18
+psql "postgres://postgres:sluice-test@localhost:55432/sluice" \
+     -f examples/postgres-schema.sql
+SLUICE_TEST_DATABASE_URL="postgres://postgres:sluice-test@localhost:55432/sluice" \
+     cargo test -p sluice-db --test postgres_live
 ```
 
 On Windows, the default MSVC toolchain needs two Visual Studio components for

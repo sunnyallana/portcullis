@@ -130,10 +130,15 @@ fn validate(spec: &ActionSpec, schema: &Schema, config: &Config) -> Result<(Acti
             let names = table.column_names();
             let hint = did_you_mean(col, &names)
                 .map_or_else(String::new, |s| format!("; did you mean `{s}`?"));
+            // The column may genuinely not exist, or it may exist with a type
+            // Sluice does not model, in which case the backend left it out of
+            // the schema deliberately. From here the two are indistinguishable,
+            // so say both rather than send someone hunting for a typo that is
+            // not there.
             err(
                 name,
                 format!(
-                    "{context} names column `{col}`, which `{}` does not have{hint}",
+                    "{context} names column `{col}`, which `{}` does not have, or which has a type Sluice does not model{hint}",
                     table.name
                 ),
             )

@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install the pinned toolchain
+      - name: Install the toolchain
         run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
 
       - uses: Swatinem/rust-cache@v2
@@ -42,9 +42,53 @@ jobs:
         run: |
           cargo run --quiet --bin sluice -- init ./ci-demo
           cargo run --quiet --bin sluice -- validate --config ./ci-demo/sluice.toml
-          cargo run --quiet --bin sluice -- call --config ./ci-demo/sluice.toml \
-            --action find_order --arg order_no=8812 --role support_eu --caller ci --json
+          cargo run --quiet --bin sluice -- call --config ./ci-demo/sluice.toml --action find_order --arg order_no=8812 --role support_eu --caller ci --json
           cargo run --quiet --bin sluice -- audit verify --config ./ci-demo/sluice.toml
+
+  postgres:
+    name: live PostgreSQL
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgres://postgres:sluice-test@localhost:5432/sluice
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: sluice-test
+          POSTGRES_DB: sluice
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Load the demo schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f examples/postgres-schema.sql
+
+      - name: Backend integration tests
+        run: cargo test -p sluice-db --test postgres_live
+        env:
+          SLUICE_TEST_DATABASE_URL: ${{ env.DATABASE_URL }}
+
+      - name: The same actions, end to end
+        run: |
+          python3 - <<'EOF'
+          from pathlib import Path
+          src = Path("examples/orders.toml").read_text()
+          src = src.replace('kind = "memory"\nfixtures = "demo-data.json"',
+                            'kind = "postgres"\ndsn = "env:DATABASE_URL"\nschemas = ["public"]')
+          # doctor fails the job on the example salt, which is the point of it.
+          src = src.replace('mask_salt = "change-me-in-production"', 'mask_salt = "ci"')
+          Path("/tmp/orders-pg.toml").write_text(src)
+          EOF
+          cargo run --quiet --bin sluice -- doctor --config /tmp/orders-pg.toml
+          cargo run --quiet --bin sluice -- call --config /tmp/orders-pg.toml --action find_order --arg order_no=8812 --role support_eu --caller ci --json
+          cargo run --quiet --bin sluice -- audit verify --config /tmp/orders-pg.toml
 
   audit:
     name: dependency audit

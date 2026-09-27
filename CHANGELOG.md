@@ -17,7 +17,10 @@ First working version.
 - Per-caller, per-action rate limiting.
 - Hash-chained append-only audit log, with `sluice audit verify` detecting an
   edited or deleted record.
-- PostgreSQL backend over a pooled, TLS-capable connection.
+- PostgreSQL backend over a pooled, TLS-capable connection, verified against a
+  live PostgreSQL 18 server: catalogue introspection, value binding and
+  decoding, row-filter enforcement on reads, inserts and updates, and server
+  error reporting with the SQLSTATE carried through.
 - In-memory backend for the demo and the test suite.
 - MCP server over stdio with concurrent request handling.
 - `sluice` CLI: `init`, `validate`, `doctor`, `tools`, `serve`, `call`,

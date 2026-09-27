@@ -5,7 +5,8 @@ What exists, what is next, and why in that order. Dated 2026-09-27.
 ## In v0.1
 
 - Declarative actions validated against the live schema at startup
-- PostgreSQL backend, pooled, TLS via rustls
+- PostgreSQL backend, pooled, TLS via rustls, with integration tests against a
+  live server (schema introspection, binding, decoding, row-filter enforcement)
 - Reads with row filters, masking, ordering, row ceilings, timeouts
 - Writes: insert, upsert, update, with row-filter enforcement and replay protection
 - Approval gates, durable queue, single-claim release
