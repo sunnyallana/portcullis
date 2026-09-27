@@ -8,17 +8,16 @@ multiple-versions = "warn"
 wildcards = "deny"
 
 [licenses]
-# Permissive licences only. Anything else needs a decision, not a default.
+# Permissive licences only, and only the ones actually in the tree: a new
+# licence appearing in a dependency should be a decision, not a default.
 allow = [
     "MIT",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
-    "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
     "Unicode-3.0",
     "Zlib",
-    "MPL-2.0",
     "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9

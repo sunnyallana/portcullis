@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+publish.workspace = true
 description = "Sluice backends: pooled PostgreSQL, plus an in-memory backend for tests and the demo."
 
 [features]

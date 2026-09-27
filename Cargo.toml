@@ -14,13 +14,14 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "UNLICENSED"
+publish = false
 
 [workspace.dependencies]
-sluice-core = { path = "crates/sluice-core" }
-sluice-sql = { path = "crates/sluice-sql" }
-sluice-db = { path = "crates/sluice-db", default-features = false }
-sluice-engine = { path = "crates/sluice-engine" }
-sluice-mcp = { path = "crates/sluice-mcp" }
+sluice-core = { path = "crates/sluice-core", version = "0.1.0" }
+sluice-sql = { path = "crates/sluice-sql", version = "0.1.0" }
+sluice-db = { path = "crates/sluice-db", version = "0.1.0", default-features = false }
+sluice-engine = { path = "crates/sluice-engine", version = "0.1.0" }
+sluice-mcp = { path = "crates/sluice-mcp", version = "0.1.0" }
 
 async-trait = "0.1"
 clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }
