@@ -1,0 +1,38 @@
+{
+  "tables": [
+    {
+      "name": "public.orders",
+      "primary_key": ["order_no"],
+      "columns": [
+        { "name": "order_no", "type": "text", "nullable": false },
+        { "name": "region", "type": "text", "nullable": false },
+        { "name": "status", "type": "text", "nullable": false },
+        { "name": "placed_at", "type": "timestamp", "nullable": false },
+        { "name": "total", "type": "decimal", "nullable": false },
+        { "name": "customer_email", "type": "text", "nullable": false },
+        { "name": "card_last4", "type": "text" }
+      ],
+      "rows": [
+        { "order_no": "8812", "region": "EU", "status": "open",     "placed_at": "2026-09-20T09:14:00Z", "total": "1200.00", "customer_email": "alice@example.com", "card_last4": "4242424242424242" },
+        { "order_no": "8813", "region": "US", "status": "open",     "placed_at": "2026-09-21T16:02:00Z", "total": "49.99",   "customer_email": "bob@example.com",   "card_last4": "4111111111111111" },
+        { "order_no": "8814", "region": "EU", "status": "shipped",  "placed_at": "2026-09-22T11:30:00Z", "total": "82.50",   "customer_email": "carol@example.co.uk", "card_last4": "5555555555554444" },
+        { "order_no": "8815", "region": "EU", "status": "held",     "placed_at": "2026-09-24T08:45:00Z", "total": "310.00",  "customer_email": "dan@example.de",    "card_last4": "4242424242421234" },
+        { "order_no": "8816", "region": "APAC", "status": "open",   "placed_at": "2026-09-25T02:10:00Z", "total": "75.25",   "customer_email": "erin@example.jp",   "card_last4": "4000000000000002" }
+      ]
+    },
+    {
+      "name": "public.refunds",
+      "primary_key": ["refund_id"],
+      "columns": [
+        { "name": "refund_id", "type": "uuid", "nullable": false },
+        { "name": "order_no", "type": "text", "nullable": false },
+        { "name": "region", "type": "text", "nullable": false },
+        { "name": "amount", "type": "decimal", "nullable": false },
+        { "name": "reason", "type": "text", "nullable": false },
+        { "name": "issued_by", "type": "text", "nullable": false },
+        { "name": "issued_at", "type": "timestamp", "nullable": false }
+      ],
+      "rows": []
+    }
+  ]
+}

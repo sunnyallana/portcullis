@@ -1,0 +1,101 @@
+# A worked Sluice deployment: order lookup and refunds for a support team.
+#
+# Run it with no database at all:
+#     sluice validate --config examples/orders.toml
+#     sluice call --config examples/orders.toml --action find_order --arg order_no=8812
+#     sluice serve --config examples/orders.toml
+#
+# Swap [backend] for the postgres block at the bottom to point it at a real
+# database. Nothing else in this file changes.
+
+[server]
+name = "orders"
+# Salt for `hash` masking. Keep it stable; changing it changes every digest.
+mask_salt = "change-me-in-production"
+
+[backend]
+kind = "memory"
+fixtures = "demo-data.json"
+
+[audit]
+path = "sluice-audit.jsonl"
+fsync = "batch"
+
+[approvals]
+path = "sluice-approvals.jsonl"
+ttl_secs = 604800   # a week
+
+[limits]
+max_rows = 500
+max_request_bytes = 65536
+
+# --- Who may do what -------------------------------------------------------
+#
+# `attributes` are the only values a row_filter can reference. They come from
+# here, never from a tool argument, which is what makes the scoping hold.
+
+[[role]]
+name = "support_eu"
+allow = ["find_order", "list_open_orders", "refund_order"]
+attributes = { region = "EU" }
+
+[[role]]
+name = "support_us"
+allow = ["find_order", "list_open_orders", "refund_order"]
+attributes = { region = "US" }
+
+[[role]]
+name = "auditor"
+allow = ["find_order", "list_open_orders"]
+attributes = { region = "EU" }
+
+# --- Actions ---------------------------------------------------------------
+
+[action.find_order]
+description = "Look up one order by its order number."
+table = "orders"
+params = { order_no = { type = "text", required = true, description = "The order number, e.g. 8812", max_len = 32 } }
+returns = ["order_no", "status", "placed_at", "total", "customer_email", "card_last4"]
+filter = "order_no = :order_no"
+row_filter = "region = $caller.region"
+mask = { customer_email = "partial", card_last4 = "last4" }
+max_rows = 1
+timeout = "10s"
+
+[action.list_open_orders]
+description = "List orders that are not yet shipped, newest first. Optionally filter by status or minimum value."
+table = "orders"
+params = { status = { type = "text", required = false, one_of = ["open", "held"], description = "Restrict to one status" }, min_total = { type = "decimal", required = false, description = "Only orders at or above this amount" } }
+returns = ["order_no", "status", "placed_at", "total", "customer_email"]
+filter = "status in ('open', 'held') and status = :status and total >= :min_total"
+row_filter = "region = $caller.region"
+mask = { customer_email = "partial" }
+order_by = ["placed_at desc"]
+max_rows = 50
+rate_limit = 60
+timeout = "15s"
+
+[action.refund_order]
+description = "Issue a refund against an order. Refunds above 500 are held for human approval."
+table = "refunds"
+params = { order_no = { type = "text", required = true, max_len = 32 }, amount = { type = "decimal", required = true, description = "Amount to refund, e.g. \"49.99\"" }, reason = { type = "text", required = true, max_len = 280, description = "Why the refund is being issued" } }
+row_filter = "region = $caller.region"
+
+[action.refund_order.write]
+mode = "insert"
+columns = { refund_id = "uuid()", order_no = ":order_no", amount = ":amount", reason = ":reason", issued_by = "$caller.id", issued_at = "now()" }
+idempotency = ["order_no", "amount"]
+returning = ["refund_id", "order_no", "amount", "issued_at"]
+
+[action.refund_order.approval]
+over_param = "amount"
+over_amount = "500.00"
+
+# --- Pointing at PostgreSQL ------------------------------------------------
+#
+# [backend]
+# kind = "postgres"
+# dsn = "env:DATABASE_URL"        # or file:/run/secrets/dsn
+# schemas = ["public"]
+# max_connections = 10
+# statement_timeout_secs = 60

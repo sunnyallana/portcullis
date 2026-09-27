@@ -1,0 +1,61 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/sluice-core",
+    "crates/sluice-sql",
+    "crates/sluice-db",
+    "crates/sluice-engine",
+    "crates/sluice-mcp",
+    "crates/sluice-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "UNLICENSED"
+
+[workspace.dependencies]
+sluice-core = { path = "crates/sluice-core" }
+sluice-sql = { path = "crates/sluice-sql" }
+sluice-db = { path = "crates/sluice-db", default-features = false }
+sluice-engine = { path = "crates/sluice-engine" }
+sluice-mcp = { path = "crates/sluice-mcp" }
+
+async-trait = "0.1"
+clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }
+indexmap = { version = "2.14", features = ["serde"] }
+jiff = { version = "0.2", features = ["serde"] }
+owo-colors = "4.4"
+rust_decimal = { version = "1.43", features = ["serde-with-str"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+sha2 = "0.11"
+sqlx = { version = "0.9", default-features = false, features = [
+    "runtime-tokio", "tls-rustls-ring", "postgres", "macros",
+    "chrono", "uuid", "rust_decimal", "json",
+] }
+thiserror = "2.0"
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "signal", "time"] }
+toml = "1.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1.26", features = ["v4", "serde"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
