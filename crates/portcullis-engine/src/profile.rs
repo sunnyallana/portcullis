@@ -408,7 +408,11 @@ impl Profile {
     )]
     pub fn to_toml(&self, server_name: &str) -> String {
         let mut out = String::new();
-        out.push_str("# Drafted by `portcullis profile`. Read it before you serve it.\n");
+        let _ = writeln!(
+            out,
+            "# Drafted by `{} profile`. Read it before you serve it.",
+            branding::BIN
+        );
         out.push_str("#\n");
         out.push_str("# Every action here is a read with a row limit. Masks were suggested from\n");
         out.push_str("# column names and sampled values; check them. Where a scope column was\n");

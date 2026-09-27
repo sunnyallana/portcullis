@@ -465,7 +465,9 @@ fn parse_auth(raw: Option<RawAuth>) -> Result<AuthSettings> {
                 issuer,
                 audience: raw.audience,
                 jwks_url: raw.jwks_url,
-                role_claim: raw.role_claim.unwrap_or_else(|| "portcullis_role".into()),
+                role_claim: raw
+                    .role_claim
+                    .unwrap_or_else(|| branding::DEFAULT_ROLE_CLAIM.into()),
                 caller_claim: raw.caller_claim.unwrap_or_else(|| "sub".into()),
                 attribute_claims: raw.attribute_claims,
                 role_map: raw.role_map,

@@ -20,7 +20,7 @@ const EXAMPLE_FIXTURE: &str = include_str!("../../../examples/demo-data.json");
 
 /// A governed data-action layer for AI agents.
 #[derive(Debug, Parser)]
-#[command(name = "portcullis", version, about, long_about = None)]
+#[command(name = branding::BIN, version, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -276,12 +276,13 @@ fn init(directory: &PathBuf, force: bool) -> Result<ExitCode, Error> {
 
     println!();
     println!("Next:");
-    println!("  portcullis validate --config {}", config.display());
+    let bin = branding::BIN;
+    println!("  {bin} validate --config {}", config.display());
     println!(
-        "  portcullis call --config {} --action find_order --arg order_no=8812 --role support_eu",
+        "  {bin} call --config {} --action find_order --arg order_no=8812 --role support_eu",
         config.display()
     );
-    println!("  portcullis serve --config {}", config.display());
+    println!("  {bin} serve --config {}", config.display());
     Ok(ExitCode::SUCCESS)
 }
 
@@ -587,7 +588,7 @@ fn emit_profile(
             println!();
             println!("Next:");
             println!("  review the masks and row filters, then");
-            println!("  portcullis validate --config {}", path.display());
+            println!("  {} validate --config {}", branding::BIN, path.display());
         }
         None => print!("{draft}"),
     }
@@ -1098,17 +1099,24 @@ async fn doctor(common: &Common) -> Result<ExitCode, Error> {
 /// Print an error the way an operator wants to read it.
 fn report(e: &Error) {
     eprintln!("{} {e}", "error:".red().bold());
+    let bin = branding::BIN;
     let hint = match e {
-        Error::Config(_) => Some("run `portcullis doctor` for a fuller check"),
-        Error::Validation { .. } => {
-            Some("fix the action in the configuration file, then re-run `portcullis validate`")
+        Error::Config(_) => Some(format!("run `{bin} doctor` for a fuller check")),
+        Error::Validation { .. } => Some(format!(
+            "fix the action in the configuration file, then re-run `{bin} validate`"
+        )),
+        Error::Denied { .. } => {
+            Some("check the `allow` list of the role you passed with --role".to_owned())
         }
-        Error::Denied { .. } => Some("check the `allow` list of the role you passed with --role"),
         Error::ApprovalRequired { .. } => {
-            Some("release it with `portcullis approvals approve <id>`")
+            Some(format!("release it with `{bin} approvals approve <id>`"))
         }
-        Error::Approval(_) => Some("list what is still waiting with `portcullis approvals list`"),
-        Error::Backend(_) => Some("check the database is reachable with `portcullis doctor`"),
+        Error::Approval(_) => Some(format!(
+            "list what is still waiting with `{bin} approvals list`"
+        )),
+        Error::Backend(_) => Some(format!(
+            "check the database is reachable with `{bin} doctor`"
+        )),
         _ => None,
     };
     if let Some(h) = hint {

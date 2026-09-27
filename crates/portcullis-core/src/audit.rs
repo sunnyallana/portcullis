@@ -149,7 +149,7 @@ impl AuditLog {
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
         let (tx, rx) = sync_channel::<Msg>(1024);
         let worker = std::thread::Builder::new()
-            .name("portcullis-audit".into())
+            .name(format!("{}-audit", crate::branding::BIN))
             .spawn(move || writer_loop(file, &rx, seq, head, fsync))?;
         Ok(Self {
             tx,
@@ -322,7 +322,10 @@ fn chain_head(path: &Path) -> Result<(u64, String)> {
 }
 
 fn tracing_unavailable_warn() {
-    eprintln!("portcullis: audit writer stopped; refusing to continue silently");
+    eprintln!(
+        "{}: audit writer stopped; refusing to continue silently",
+        crate::branding::BIN
+    );
 }
 
 #[cfg(test)]

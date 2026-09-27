@@ -82,8 +82,12 @@ impl Metrics {
         let inner = self.lock();
         let mut out = String::new();
 
-        out.push_str("# HELP portcullis_http_requests_total HTTP responses by route and status.\n");
-        out.push_str("# TYPE portcullis_http_requests_total counter\n");
+        header(
+            &mut out,
+            series::HTTP_REQUESTS,
+            "counter",
+            "HTTP responses by route and status.",
+        );
         for ((route, status), n) in &inner.http_requests {
             let _ = writeln!(
                 out,
@@ -93,8 +97,12 @@ impl Metrics {
             );
         }
 
-        out.push_str("# HELP portcullis_tool_calls_total Tool calls by action and outcome.\n");
-        out.push_str("# TYPE portcullis_tool_calls_total counter\n");
+        header(
+            &mut out,
+            series::TOOL_CALLS,
+            "counter",
+            "Tool calls by action and outcome.",
+        );
         for ((action, outcome), n) in &inner.tool_calls {
             let _ = writeln!(
                 out,
@@ -104,14 +112,22 @@ impl Metrics {
             );
         }
 
-        out.push_str("# HELP portcullis_auth_failures_total Rejected credentials by reason.\n");
-        out.push_str("# TYPE portcullis_auth_failures_total counter\n");
+        header(
+            &mut out,
+            series::AUTH_FAILURES,
+            "counter",
+            "Rejected credentials by reason.",
+        );
         for (code, n) in &inner.auth_failures {
             let _ = writeln!(out, "{}{{reason=\"{code}\"}} {n}", series::AUTH_FAILURES);
         }
 
-        out.push_str("# HELP portcullis_tool_call_duration_seconds Tool call wall time.\n");
-        out.push_str("# TYPE portcullis_tool_call_duration_seconds histogram\n");
+        header(
+            &mut out,
+            series::TOOL_DURATION,
+            "histogram",
+            "Tool call wall time.",
+        );
         let mut cumulative = 0u64;
         for (i, bound) in BUCKETS.iter().enumerate() {
             cumulative += inner.bucket_counts[i];
@@ -147,6 +163,16 @@ impl Metrics {
     }
 }
 
+/// Write the `# HELP` and `# TYPE` lines for one series.
+///
+/// These were literals while the sample lines used the constants. A prefix
+/// change would then have produced an exposition whose comments named one
+/// family and whose samples named another, which Prometheus rejects.
+fn header(out: &mut String, series: &str, kind: &str, help: &str) {
+    let _ = writeln!(out, "# HELP {series} {help}");
+    let _ = writeln!(out, "# TYPE {series} {kind}");
+}
+
 fn escape(label: &str) -> String {
     label.replace('\\', "\\\\").replace('"', "\\\"")
 }
@@ -154,6 +180,51 @@ fn escape(label: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The test that would have caught the HELP and TYPE lines being literals
+    /// while the samples used the constants: it reads the rendered output and
+    /// insists every name in it is one the branding module declares.
+    #[test]
+    fn the_rendered_output_names_only_declared_series() {
+        let m = Metrics::new();
+        m.request("/mcp", 200);
+        m.tool_call("find_order", "ok", Duration::from_millis(3));
+        m.auth_failure("credential_missing");
+        let text = m.render();
+
+        for s in series::ALL {
+            assert!(
+                text.contains(&format!("# HELP {s} ")),
+                "no HELP line for `{s}`"
+            );
+            assert!(
+                text.contains(&format!("# TYPE {s} ")),
+                "no TYPE line for `{s}`"
+            );
+        }
+
+        for line in text.lines() {
+            let named = line
+                .strip_prefix("# HELP ")
+                .or_else(|| line.strip_prefix("# TYPE "))
+                .map_or_else(
+                    || line.split(['{', ' ']).next().unwrap_or(""),
+                    |rest| rest.split_whitespace().next().unwrap_or(""),
+                );
+            if named.is_empty() {
+                continue;
+            }
+            // Histogram samples carry _bucket, _sum and _count suffixes.
+            let base = named
+                .trim_end_matches("_bucket")
+                .trim_end_matches("_sum")
+                .trim_end_matches("_count");
+            assert!(
+                series::ALL.contains(&base) || series::ALL.contains(&named),
+                "`{named}` is not a declared series; line: {line}"
+            );
+        }
+    }
 
     #[test]
     fn counters_and_the_histogram_render() {

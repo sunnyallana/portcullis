@@ -45,6 +45,12 @@ pub const AUDIT_FILE: &str = "portcullis-audit.jsonl";
 /// Default approvals store name. Operators override it in `[approvals] path`.
 pub const APPROVALS_FILE: &str = "portcullis-approvals.jsonl";
 
+/// Default OIDC claim carrying the caller's role.
+///
+/// A deployment overrides it in `[auth] role_claim`; this is only the name
+/// used when it says nothing.
+pub const DEFAULT_ROLE_CLAIM: &str = "portcullis_role";
+
 /// Identity the profiler records for its own sampling reads.
 pub const PROFILE_CALLER: &str = "portcullis-profile";
 

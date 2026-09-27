@@ -275,7 +275,7 @@ impl Default for OidcConfig {
         Self {
             issuer: String::new(),
             audience: Vec::new(),
-            role_claim: "portcullis_role".into(),
+            role_claim: portcullis_core::branding::DEFAULT_ROLE_CLAIM.into(),
             caller_claim: "sub".into(),
             attribute_claims: BTreeMap::new(),
             role_map: BTreeMap::new(),
@@ -350,7 +350,11 @@ impl HttpKeySource {
     pub fn new(url: impl Into<String>) -> Result<Self, String> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
-            .user_agent(concat!("portcullis/", env!("CARGO_PKG_VERSION")))
+            .user_agent(format!(
+                "{}/{}",
+                portcullis_core::branding::BIN,
+                env!("CARGO_PKG_VERSION")
+            ))
             .build()
             .map_err(|e| format!("cannot build an HTTP client: {e}"))?;
         Ok(Self {
