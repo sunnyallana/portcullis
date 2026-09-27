@@ -134,6 +134,19 @@ The writer is a dedicated thread with a bounded queue. When the queue is full,
 callers wait. Records are never dropped, because "we were too busy to log it" is
 not an acceptable answer.
 
+## Dependency advisories
+
+`cargo deny check` runs in CI and fails on a new advisory. One exception is
+recorded in `deny.toml`, with its reasoning, and it is worth knowing about:
+
+**RUSTSEC-2023-0071**, the Marvin attack on the `rsa` crate, has no fixed
+version. It reaches Sluice only through `jsonwebtoken`'s pure-Rust provider,
+and it concerns timing side channels in **private-key** operations. Sluice
+holds no RSA private key: it verifies access tokens against public keys from a
+JWKS. If you would rather not depend on that reasoning, configure your identity
+provider to sign with EC keys (ES256), which do not enter the `rsa` code path
+at all.
+
 ## What this does not do
 
 - **It is not a database firewall.** Anything else with the same credentials can

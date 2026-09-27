@@ -3,6 +3,26 @@
 [advisories]
 yanked = "deny"
 
+# Reviewed exceptions. Each one needs a reason that someone can check, and a
+# date, so they get re-examined rather than accumulating.
+ignore = [
+    # RUSTSEC-2023-0071 — Marvin attack: timing side channels in the `rsa`
+    # crate's private-key operations. Reviewed 2026-09-27.
+    #
+    # `rsa` reaches us only through jsonwebtoken's `rust_crypto` provider, and
+    # Sluice never holds an RSA private key: it verifies access tokens with
+    # public keys from a JWKS. The vulnerable code path is decryption and
+    # signing, neither of which runs here. The test suite does sign tokens,
+    # with a throwaway key that is in the repository.
+    #
+    # There is no fixed version; the advisory says so. To remove the
+    # dependency entirely, switch jsonwebtoken to its `aws_lc_rs` provider,
+    # which needs a C toolchain at build time. Deployments that would rather
+    # not rely on this reasoning can also configure their identity provider to
+    # sign with EC keys (ES256), which do not touch `rsa` at all.
+    { id = "RUSTSEC-2023-0071", reason = "no RSA private-key operations in this process; verification only" },
+]
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
