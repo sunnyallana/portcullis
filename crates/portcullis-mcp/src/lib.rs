@@ -186,7 +186,7 @@ pub async fn handle(engine: &Engine, caller: &Caller, request: Request) -> Optio
     Some(match request.method.as_str() {
         "initialize" => Response::ok(id, initialize(engine, &request.params)),
         "ping" => Response::ok(id, json!({})),
-        "tools/list" => Response::ok(id, tools_list(engine)),
+        "tools/list" => Response::ok(id, tools_list(engine, caller)),
         "tools/call" => match tools_call(engine, caller, &request.params).await {
             Ok(result) => Response::ok(id, result),
             Err((code, message)) => Response::err(id, code, message, None),
@@ -223,9 +223,13 @@ fn initialize(engine: &Engine, params: &Json) -> Json {
     })
 }
 
-fn tools_list(engine: &Engine) -> Json {
+/// The tools this caller can see.
+///
+/// Takes the caller because a deployment may serve several bundle versions at
+/// once: two clients can legitimately get different lists.
+fn tools_list(engine: &Engine, caller: &Caller) -> Json {
     let mut tools: Vec<Json> = engine
-        .registry()
+        .registry_for(caller)
         .iter()
         .map(|(name, action)| {
             let (read_only, destructive) = action.spec.kind.hints();

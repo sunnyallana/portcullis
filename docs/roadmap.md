@@ -1,6 +1,6 @@
 # Roadmap
 
-What exists, what is next, and why in that order. Dated 2026-09-27.
+What exists, what is next, and why in that order. Dated 2026-09-28.
 
 ## Built
 
@@ -21,36 +21,40 @@ What exists, what is next, and why in that order. Dated 2026-09-27.
 - Approvals JSON API and a small console; `/healthz`, `/readyz`, `/metrics`
 - `portcullis profile`: read a database, classify columns, draft a configuration
 - `portcullis replay`: re-run recorded reads and diff against a baseline
-- `init`, `validate`, `doctor`, `tools`, `call`, `serve`, `approvals`, `audit`,
-  `apikey`
+- Versioned action bundles: several versions served at once, aliases, sticky
+  per-caller canary, every version validated at startup, the version recorded
+  on every audit line
+- `approval_status`, so a caller can find out what became of a write it parked
+- Rate limits and replay protection shareable across replicas, in the database
+- Audit rotation into sealed segments, with the chain running through them
+- `init`, `validate`, `doctor`, `tools`, `bundles`, `call`, `serve`,
+  `approvals`, `audit`, `replay`, `apikey`
 
 ## Next, in order
 
-**1. Versioned action bundles.** The one substantial thing still missing. Today
-a configuration change is a file edit and a restart, which is fine for one
-deployment and awkward for a fleet: there is no way to canary `orders@v4`
-against ten percent of traffic, and no way to roll back without another edit.
-The shape is a named, versioned set of actions with aliases, resolved per
-request, with the registry keyed by version. `portcullis replay` already provides
-the safety net this would promote against; it is the promotion mechanism that
-is missing.
+**1. SQL Server.** The only backend left that can be done properly here, and
+it is more work than MySQL was. `sqlx` dropped MSSQL support after 0.6, so
+this is not another `sqlx` feature flag: it needs `tiberius` with its own
+pool, its own type mapping, `@P1` placeholders, `[bracket]` quoting,
+`OFFSET/FETCH` instead of `LIMIT`, and `OUTPUT INSERTED.*` instead of
+`RETURNING`. Testable against `mcr.microsoft.com/mssql/server`, which is the
+part that matters.
 
-**2. Shared limits.** Rate limiting and the idempotency store are per process,
-so a horizontally scaled deployment enforces them per replica. Both want to
-move into the database behind a small trait, which also makes replay protection
-survive a restart of a different pod.
+**2. Snowflake and BigQuery.** Deliberately not started. Both are REST APIs
+rather than wire-protocol drivers, and neither has a local emulator worth
+testing against, so writing them now would mean shipping two backends that
+have never executed a query — against a codebase where every other backend
+has live integration tests. They need a real account and a real dataset
+before the first line, and cost controls matter more than row limits there,
+which is a design question of its own.
 
-**3. More backends.** SQL Server next, then Snowflake and BigQuery where cost
-controls matter more than row limits. `Dialect` and `Backend` are both already
-the seam; MySQL took a day and proved it.
+**3. Telling the agent sooner.** `approval_status` closes the gap by letting a
+caller poll. A webhook or a long poll would close it better for unattended
+runs that would rather not spin.
 
-**4. Audit log rotation and shipping.** Rotation is manual and must be done
-with the process stopped. It should rotate on size or age, seal each segment
-with its head digest, and optionally push segments to object storage.
-
-**5. Multi-step actions.** One action that is really a join, a lookup and a
-write, with pushdown where the backend can do the work. Useful, and not before
-everything above is solid.
+**4. Audit shipping.** Rotation seals segments; nothing yet pushes them to
+object storage or records their head digests anywhere external. The seal makes
+that useful, so it is the natural next step.
 
 ## Considered and deliberately not done
 
@@ -65,9 +69,11 @@ everything above is solid.
 
 ## Known limitations
 
-- No versioned bundles, so configuration changes are edit-and-restart.
-- Rate limits and idempotency are per process.
-- Audit rotation is manual and needs the process stopped.
+- Rate limits and replay protection are per process unless
+  `[limits] store = "database"`, and the shared window is a fixed minute
+  rather than a sliding one.
+- Archiving sealed segments off the host is still manual.
+- An agent has to poll `approval_status`; nothing calls it back.
 - `/metrics` is unauthenticated by design; keep it off public interfaces.
 - MySQL: no UUID type (use `CHAR(36)`), and `returning` costs a second round
   trip.

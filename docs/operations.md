@@ -329,10 +329,27 @@ portcullis audit verify
 the host and keep the printed head digest somewhere separate — that is what
 makes tampering provable rather than merely detectable.
 
-Rotation: the file is opened in append mode and the chain continues across
-restarts. To rotate, stop the process, move the file, and start again; the new
-file begins a new chain, so archive the old head digest with it. Do not rotate
-underneath a running process.
+### Rotation
+
+The server rotates on its own, at 100 MB by default or on `rotate_days`.
+Closed segments sit beside the live file as
+`portcullis-audit-000000000001-000000000500.jsonl`, each with a `.seal`
+recording its range and head digest.
+
+The chain runs through the rotation, so `audit verify` still covers the whole
+history and reports which file a break is in. Deleting a segment breaks it;
+so does editing one and forging its seal.
+
+```sh
+portcullis audit segments          # what is closed, and what each seal claims
+portcullis audit rotate            # close one early — for a log no server is writing
+portcullis audit verify            # every segment, in order, then the live file
+```
+
+Archive whole segments once sealed. Keep the head digest of the newest
+archived segment somewhere separate: that is what turns detection into proof.
+Do not move files underneath a running process; use `rotate` while it is
+stopped, or let the policy do it.
 
 `fsync` policy:
 
@@ -362,11 +379,68 @@ at the same count, or a call that started or stopped failing.
   and warned about at startup.
 - `timeout` per action is a client-side deadline; `statement_timeout_secs` is
   the server-side backstop. Set the backstop above the largest action timeout.
-- `rate_limit` is per caller and action, in a one-minute sliding window, held
-  in memory. It resets on restart and is not shared between processes, so a
-  horizontally scaled deployment enforces it per replica.
-- The idempotency store is a local file for the same reason. Two replicas do
-  not share replay protection.
+- `rate_limit` is per caller and action. With `[limits] store = "local"` it is
+  a sliding one-minute window held in memory, per process. With
+  `store = "database"` it is a fixed minute bucket shared by every replica.
+- Replay protection follows the same setting: a local file, or a shared table.
+
+### Sharing limits across replicas
+
+```sh
+psql "$DATABASE_URL" -f examples/shared-state-postgres.sql
+# or
+mysql -h… portcullis < examples/shared-state-mysql.sql
+```
+
+```toml
+[limits]
+store = "database"
+```
+
+Two tables, created by you rather than by Portcullis, because creating tables
+needs privileges the least-privilege role should not have. The grants each
+needs are in the DDL. A deployment that asks for shared limits without the
+tables refuses to start.
+
+Cost: one round trip per rate check and per replay lookup. Behaviour change:
+the shared window is a fixed minute rather than a sliding one, so up to twice
+the limit can pass across a boundary — bounded, and worth knowing before you
+set a limit that matters.
+
+### Shipping a change without editing what is live
+
+```sh
+portcullis bundles                 # versions, aliases, and where each role lands
+```
+
+Put the new version in `[bundles] dir` as its own file, point an alias at it,
+and send a slice of callers there:
+
+```toml
+[bundles]
+dir = "bundles"
+default = "stable"
+canary_alias = "next"
+canary_percent = 10
+
+[bundles.alias]
+stable = "1"
+next = "2"
+```
+
+Promotion is moving `stable` to `2`. Rollback is moving it back. Neither
+touches the file that was serving traffic, and every loaded version is
+validated against the live schema at startup, so a version that cannot start
+is found before it is promoted.
+
+Canary assignment is sticky per caller, so a bad version misbehaves
+consistently for the affected people rather than intermittently for everyone.
+A role with `bundle = "…"` is pinned and never moved. Every audit record
+carries the version it ran against, which is what lets you answer "what could
+this caller do at that moment" afterwards.
+
+Pair it with replay: record a baseline on the current version, promote, and
+compare.
 - Reads fetch one row beyond the limit to detect truncation, and tell the model
   when a result was cut short.
 

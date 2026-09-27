@@ -87,6 +87,13 @@ pub struct AuditRecord {
     /// Omitted when empty, so logs written before this existed still verify.
     #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
     pub scope: BTreeMap<String, crate::Value>,
+    /// Bundle version the call ran against.
+    ///
+    /// Recorded because with a canary in place "what could this caller do"
+    /// has a different answer per caller, and the log is where that question
+    /// gets settled afterwards.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub bundle: Option<String>,
     /// Digest of the previous record; all zeroes for the first.
     #[serde(default)]
     pub prev: String,
@@ -633,6 +640,7 @@ mod tests {
             error: None,
             approval: None,
             scope: BTreeMap::new(),
+            bundle: None,
             prev: String::new(),
             hash: String::new(),
         }

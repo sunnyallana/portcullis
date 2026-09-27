@@ -531,3 +531,191 @@ async fn an_action_naming_a_missing_column_fails_at_startup() {
     assert!(text.contains("did you mean `status`"), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A deployment serving two versions at once, which is the whole point of
+/// bundles: change what agents may do without editing what is already live.
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, written out so a reader can follow it"
+)]
+async fn two_bundle_versions_are_served_side_by_side() {
+    let dir = std::env::temp_dir().join(format!("portcullis-bundles-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(dir.join("bundles")).unwrap();
+    std::fs::write(dir.join("data.json"), FIXTURE).unwrap();
+
+    // Version 1 is the live configuration, untouched.
+    let main = CONFIG
+        .replace(
+            "name = \"readonly\"
+allow",
+            "name = \"readonly\"
+bundle = \"stable\"
+allow",
+        )
+        .replace(
+            r#"allow = ["find_order", "refund_order"]
+attributes = { region = "EU" }
+
+[[role]]
+name = "manager"#,
+            r#"allow = ["find_order", "refund_order", "count_orders"]
+attributes = { region = "EU" }
+
+[[role]]
+name = "manager"#,
+        )
+        .replace(
+            "[approvals]",
+            r#"
+[bundle]
+name = "orders"
+version = "1"
+
+[bundles]
+dir = "bundles"
+default = "stable"
+canary_alias = "next"
+canary_percent = 50
+
+[bundles.alias]
+stable = "1"
+next = "2"
+
+[approvals]"#,
+        );
+    std::fs::write(dir.join("portcullis.toml"), &main).unwrap();
+
+    // Version 2 adds an action and tightens a mask. It never touches the file
+    // that is already serving traffic.
+    std::fs::write(
+        dir.join("bundles").join("v2.toml"),
+        r#"
+[bundle]
+version = "2"
+
+[action.find_order]
+description = "Look up an order."
+table = "orders"
+params = { order_no = { type = "text", required = true } }
+returns = ["order_no", "total", "customer_email"]
+filter = "order_no = :order_no"
+row_filter = "region = $caller.region"
+mask = { customer_email = "redact" }
+max_rows = 10
+
+[action.count_orders]
+description = "Only exists in version 2."
+table = "orders"
+returns = ["order_no"]
+row_filter = "region = $caller.region"
+max_rows = 100
+"#,
+    )
+    .unwrap();
+
+    let config = Config::load(dir.join("portcullis.toml")).unwrap();
+    assert_eq!(config.versions(), vec!["1".to_string(), "2".to_string()]);
+    let (engine, warnings) = Engine::build(config).await.unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+
+    // A role pinned to stable never moves, whatever the canary says. Prove it
+    // with a caller the canary would otherwise take, rather than with one that
+    // happens to hash outside the slice.
+    let taken = (0..200)
+        .map(|i| format!("c{i}"))
+        .find(|id| engine.version_for(&engine.caller("support_eu", id).unwrap()) == "2")
+        .expect("someone should fall in a 50% slice");
+    let pinned = engine.caller("readonly", &taken).unwrap();
+    assert_eq!(
+        engine.version_for(&pinned),
+        "1",
+        "`bundle = \"stable\"` must override the canary"
+    );
+
+    // Find one caller on each side of a 50% canary.
+    let on_old = (0..200)
+        .map(|i| engine.caller("support_eu", &format!("c{i}")).unwrap())
+        .find(|c| engine.version_for(c) == "1")
+        .expect("someone should be on version 1");
+    let on_new = (0..200)
+        .map(|i| engine.caller("support_eu", &format!("c{i}")).unwrap())
+        .find(|c| engine.version_for(c) == "2")
+        .expect("someone should be on version 2");
+
+    // The same action behaves differently per version: v2 redacts.
+    let old = engine
+        .call(
+            "find_order",
+            &serde_json::json!({"order_no": "8812"}),
+            &on_old,
+        )
+        .await
+        .unwrap();
+    assert_eq!(old.rows.to_json()[0]["customer_email"], "a***@example.com");
+
+    let new = engine
+        .call(
+            "find_order",
+            &serde_json::json!({"order_no": "8812"}),
+            &on_new,
+        )
+        .await
+        .unwrap();
+    assert_eq!(new.rows.to_json()[0]["customer_email"], "[redacted]");
+
+    // An action that only exists in v2 is unknown to a caller on v1.
+    assert!(
+        engine
+            .call("count_orders", &serde_json::json!({}), &on_new)
+            .await
+            .is_ok()
+    );
+    let missing = engine
+        .call("count_orders", &serde_json::json!({}), &on_old)
+        .await
+        .unwrap_err();
+    assert!(matches!(missing, Error::UnknownAction(_)), "{missing}");
+
+    // Assignment is sticky, so the log can be reasoned about afterwards.
+    for _ in 0..10 {
+        assert_eq!(engine.version_for(&on_new), "2");
+    }
+
+    // And the log says which version each call ran against.
+    engine.flush_audit().unwrap();
+    let text = std::fs::read_to_string(dir.join("audit.jsonl")).unwrap();
+    let bundles: Vec<String> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter_map(|v| v["bundle"].as_str().map(ToOwned::to_owned))
+        .collect();
+    assert!(bundles.contains(&"1".to_string()), "{bundles:?}");
+    assert!(bundles.contains(&"2".to_string()), "{bundles:?}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn an_alias_pointing_at_a_version_that_is_not_loaded_fails_the_boot() {
+    let dir = std::env::temp_dir().join(format!("portcullis-badalias-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("data.json"), FIXTURE).unwrap();
+    let main = CONFIG.replace(
+        "[approvals]",
+        r#"
+[bundles]
+default = "stable"
+
+[bundles.alias]
+stable = "7"
+
+[approvals]"#,
+    );
+    std::fs::write(dir.join("portcullis.toml"), &main).unwrap();
+
+    let err = Config::load(dir.join("portcullis.toml")).unwrap_err();
+    assert!(format!("{err}").contains("not loaded"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

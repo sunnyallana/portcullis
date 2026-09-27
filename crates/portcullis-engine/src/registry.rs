@@ -59,11 +59,17 @@ pub struct Warning {
 }
 
 impl Registry {
-    /// Validate every action against the live schema.
-    pub fn build(config: &Config, schema: &Schema) -> Result<(Self, Vec<Warning>)> {
+    /// Validate one bundle version against the live schema.
+    ///
+    /// Every loaded version is validated at startup, not just the live one: a
+    /// canary that cannot start is better found before it is promoted.
+    pub fn build(config: &Config, schema: &Schema, version: &str) -> Result<(Self, Vec<Warning>)> {
         let mut actions = IndexMap::new();
         let mut warnings = Vec::new();
-        for (name, spec) in &config.actions {
+        let specs = config
+            .actions_for(version)
+            .ok_or_else(|| Error::Config(format!("no bundle version `{version}` is loaded")))?;
+        for (name, spec) in specs {
             let (action, mut w) = validate(spec, schema, config)?;
             warnings.append(&mut w);
             actions.insert(name.clone(), action);

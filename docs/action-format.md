@@ -54,6 +54,15 @@ saying so.
 |---|---|---|
 | `path` | `portcullis-audit.jsonl` | Where the log is written |
 | `fsync` | `batch` | `always` (fsync per record), `batch` (flush per record, fsync at shutdown), `never` (tests only) |
+| `rotate_bytes` | `104857600` | Close a segment past this size. `0` disables rotation |
+| `rotate_days` | none | Close a segment this old, whatever its size |
+
+Rotation writes `portcullis-audit-000000000001-000000000500.jsonl` beside the
+live file, with a `.seal` recording its range and head digest. **The chain
+runs through the rotation**: the first record of a new segment carries the
+digest of the last record of the old one, so `audit verify` spans the whole
+history and a deleted segment breaks it. `audit segments` lists them;
+`audit rotate` closes one early, for a log no server is writing to.
 
 ## `[approvals]`
 
@@ -71,6 +80,18 @@ saying so.
 | `max_rows` | `1000` | Hard ceiling; caps any action's own `max_rows` |
 | `max_request_bytes` | `65536` | Largest accepted argument object |
 | `idempotency_ttl_secs` | `86400` | How long a completed write is remembered |
+| `store` | `local` | `local` keeps limits in this process; `database` shares them across replicas |
+
+`store = "database"` needs the tables in `examples/shared-state-postgres.sql`
+or `examples/shared-state-mysql.sql`. Portcullis never creates them: that
+needs privileges the least-privilege role should not have. A deployment that
+asks for shared limits without the tables refuses to start rather than quietly
+falling back.
+
+One behaviour differs between the two. The local limiter uses a sliding
+one-minute window; the shared one uses a fixed minute bucket, because a
+sliding window costs a row per call. The consequence is bounded and worth
+knowing: up to twice the limit can pass across a minute boundary, never more.
 
 ## `[http]`
 
@@ -142,6 +163,60 @@ caller = "local"
 Development only. The server refuses to bind anything but loopback in this
 state.
 
+## `[bundle]` and `[bundles]`
+
+A bundle is a named, versioned set of actions. Versioning is per bundle, not
+per action: an action's meaning depends on the ones beside it, so versioning
+them separately lets a caller receive a combination nobody reasoned about.
+
+```toml
+[bundle]
+name = "orders"
+version = "1"          # this file is version 1
+
+[bundles]
+dir = "bundles"        # every *.toml in here is another version
+default = "stable"
+canary_alias = "next"
+canary_percent = 10
+
+[bundles.alias]
+stable = "1"
+next = "2"
+```
+
+A file in `dir` carries its own `[bundle] version` and its actions, and
+nothing else — one version cannot change the backend, the roles or the audit
+settings, only which actions exist.
+
+```toml
+# bundles/v2.toml
+[bundle]
+version = "2"
+
+[action.find_order]
+# …
+```
+
+Every loaded version is validated against the live schema at startup, so a
+canary that cannot start is found before it is promoted.
+
+**Who gets what.** A role may pin itself with `bundle = "stable"` (an alias or
+a bare version label). Everyone else follows `default`, except the canary
+slice. Canary assignment is **sticky per caller**: the same caller always
+lands on the same side, so a bad version misbehaves consistently for the
+people affected rather than intermittently for everyone, and the audit log can
+be reasoned about afterwards. A pinned role is never moved by the canary.
+
+Role grants are checked against the union of every loaded version, so an
+action added in a newer version can be granted before that version is live. A
+caller on a version that lacks it gets "no such action", which is the correct
+answer.
+
+Every audit record carries the version the call ran against.
+`portcullis bundles` shows the versions, the aliases and which version each
+role lands on.
+
 ## `[[role]]`
 
 ```toml
@@ -150,6 +225,9 @@ name = "support_eu"
 allow = ["find_order", "refund_order"]     # or ["*"]
 attributes = { region = "EU", tenant = 42 }
 ```
+
+A role may also carry `bundle = "stable"`, pinning it to an alias or an exact
+version and opting it out of any canary.
 
 `attributes` are the only values a `row_filter` can reference through
 `$caller.*`. They come from here, never from a tool argument. Two keys are

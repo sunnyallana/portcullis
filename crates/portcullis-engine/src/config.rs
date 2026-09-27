@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::bundles::{Canary, Routing};
 use indexmap::IndexMap;
 use portcullis_core::audit::{Fsync, Rotate};
 use portcullis_core::branding;
@@ -37,8 +38,18 @@ pub struct Config {
     pub auth: AuthSettings,
     /// Roles, keyed by name.
     pub roles: BTreeMap<String, Role>,
-    /// Actions, in file order.
-    pub actions: IndexMap<String, ActionSpec>,
+    /// The bundle every version here belongs to.
+    pub bundle_name: String,
+    /// Actions by bundle version, each in file order.
+    ///
+    /// A deployment always has at least one version. Extra versions come from
+    /// `[bundles] dir`, which is what makes a canary possible without editing
+    /// the file that is already live.
+    pub bundles: BTreeMap<String, IndexMap<String, ActionSpec>>,
+    /// Which version a caller gets.
+    pub routing: Routing,
+    /// Where extra bundle versions are loaded from.
+    pub bundle_dir: Option<PathBuf>,
     /// Directory the file lived in, used to resolve relative paths.
     pub base_dir: PathBuf,
 }
@@ -240,6 +251,11 @@ pub struct Role {
     pub allow: Vec<String>,
     /// Attributes available to row filters as `$caller.*`.
     pub attributes: BTreeMap<String, Value>,
+    /// Alias or version this role is pinned to.
+    ///
+    /// Pinning opts a role out of the canary, which is how an operator says
+    /// "not this one" for a role that must not move.
+    pub bundle: Option<String>,
 }
 
 impl Role {
@@ -259,11 +275,129 @@ impl Config {
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-        Self::parse(&text, &base_dir).map_err(|e| match e {
+        let mut config = Self::parse(&text, &base_dir).map_err(|e| match e {
             // Prefix the file name so a multi-file deployment says which one.
             Error::Config(msg) => Error::Config(format!("{}: {msg}", path.display())),
             other => other,
-        })
+        })?;
+        config.load_extra_bundles()?;
+        config.check_role_grants()?;
+        config.routing.check(&config.versions())?;
+        Ok(config)
+    }
+
+    /// Every action a role names must exist in **some** loaded version.
+    ///
+    /// Checked against the union rather than one version, because that is the
+    /// point of bundles: an action added in a newer version has to be
+    /// grantable before that version is live, and one removed in a newer
+    /// version is a deliberate change rather than a typo. A caller on a
+    /// version that lacks it simply gets "no such action".
+    fn check_role_grants(&self) -> Result<()> {
+        let mut known: Vec<&str> = self
+            .bundles
+            .values()
+            .flat_map(|actions| actions.keys().map(String::as_str))
+            .collect();
+        known.sort_unstable();
+        known.dedup();
+
+        for role in self.roles.values() {
+            for allowed in &role.allow {
+                if allowed != "*" && !known.contains(&allowed.as_str()) {
+                    let hint = portcullis_core::did_you_mean(allowed, &known)
+                        .map_or_else(String::new, |s| format!("; did you mean `{s}`?"));
+                    return Err(Error::Config(format!(
+                        "role `{}` allows `{allowed}`, which is not an action in any bundle version{hint}",
+                        role.name
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Version labels this deployment has loaded, sorted.
+    pub fn versions(&self) -> Vec<String> {
+        self.bundles.keys().cloned().collect()
+    }
+
+    /// Actions for one version.
+    pub fn actions_for(&self, version: &str) -> Option<&IndexMap<String, ActionSpec>> {
+        self.bundles.get(version)
+    }
+
+    /// Read `[bundles] dir` and add every version it holds.
+    ///
+    /// Each file carries its own `[bundle]` header and nothing else from the
+    /// main configuration: one version cannot change the backend, the roles or
+    /// the audit settings, only which actions exist.
+    fn load_extra_bundles(&mut self) -> Result<()> {
+        let Some(dir) = self.bundle_dir.clone() else {
+            return Ok(());
+        };
+        let entries = std::fs::read_dir(&dir).map_err(|e| {
+            Error::Config(format!(
+                "cannot read [bundles] dir `{}`: {e}",
+                dir.display()
+            ))
+        })?;
+
+        let mut files: Vec<PathBuf> = entries
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+            .collect();
+        files.sort();
+
+        for file in files {
+            let text = std::fs::read_to_string(&file)
+                .map_err(|e| Error::Config(format!("cannot read `{}`: {e}", file.display())))?;
+            let raw: RawBundleFile = toml::from_str(&text)
+                .map_err(|e| Error::Config(format!("{}: {}", file.display(), describe_toml(&e))))?;
+
+            let name = raw.bundle.name.unwrap_or_else(|| self.bundle_name.clone());
+            if name != self.bundle_name {
+                return Err(Error::Config(format!(
+                    "{}: declares bundle `{name}` but this deployment serves `{}`; one deployment is one bundle",
+                    file.display(),
+                    self.bundle_name
+                )));
+            }
+
+            let mut actions = IndexMap::new();
+            for (action_name, raw_action) in raw.action {
+                if !portcullis_core::spec::is_identifier(&action_name) {
+                    return Err(Error::Config(format!(
+                        "{}: action name `{action_name}` must be letters, digits and underscore",
+                        file.display()
+                    )));
+                }
+                let spec = ActionSpec::from_raw(&action_name, raw_action).map_err(|problem| {
+                    Error::Validation {
+                        action: action_name.clone(),
+                        problem,
+                    }
+                })?;
+                actions.insert(action_name, spec);
+            }
+            if actions.is_empty() {
+                return Err(Error::Config(format!(
+                    "{}: defines no actions",
+                    file.display()
+                )));
+            }
+
+            if self.bundles.contains_key(&raw.bundle.version) {
+                return Err(Error::Config(format!(
+                    "{}: version `{}` is already loaded; each version appears once",
+                    file.display(),
+                    raw.bundle.version
+                )));
+            }
+            self.bundles.insert(raw.bundle.version, actions);
+        }
+        Ok(())
     }
 
     /// Parse configuration text.
@@ -334,6 +468,7 @@ impl Config {
                     name: r.name,
                     allow: r.allow,
                     attributes: r.attributes,
+                    bundle: r.bundle,
                 },
             );
         }
@@ -363,23 +498,33 @@ impl Config {
             return Err(Error::Config("no `[action.*]` is defined".into()));
         }
 
-        // Every action a role names must exist, or the operator has a typo
-        // that quietly grants nothing.
-        for role in roles.values() {
-            for allowed in &role.allow {
-                if allowed != "*" && !actions.contains_key(allowed) {
-                    let names: Vec<&str> = actions.keys().map(String::as_str).collect();
-                    let hint = portcullis_core::did_you_mean(allowed, &names)
-                        .map_or_else(String::new, |s| format!("; did you mean `{s}`?"));
-                    return Err(Error::Config(format!(
-                        "role `{}` allows `{allowed}`, which is not an action{hint}",
-                        role.name
-                    )));
-                }
-            }
-        }
+        let bundle_name = raw
+            .bundle
+            .as_ref()
+            .and_then(|b| b.name.clone())
+            .unwrap_or_else(|| raw.server.name.clone());
+        let base_version = raw
+            .bundle
+            .as_ref()
+            .and_then(|b| b.version.clone())
+            .unwrap_or_else(|| "1".to_owned());
 
-        Ok(Self {
+        let raw_bundles = raw.bundles.unwrap_or_default();
+        let routing = Routing {
+            aliases: raw_bundles.alias,
+            default: raw_bundles.default.unwrap_or_else(|| base_version.clone()),
+            canary: match (raw_bundles.canary_alias, raw_bundles.canary_percent) {
+                (Some(alias), Some(percent)) => Some(Canary { alias, percent }),
+                (None, None) => None,
+                _ => {
+                    return Err(Error::Config(
+                        "[bundles] canary_alias and canary_percent must be set together".into(),
+                    ));
+                }
+            },
+        };
+
+        let parsed = Self {
             server: ServerConfig {
                 name: raw.server.name,
                 mask_salt,
@@ -442,9 +587,20 @@ impl Config {
                 },
             },
             roles,
-            actions,
+            bundle_name,
+            bundles: BTreeMap::from([(base_version, actions)]),
+            routing,
+            bundle_dir: raw_bundles.dir.map(|d| resolve_path(&d, base_dir)),
             base_dir: base_dir.to_path_buf(),
-        })
+        };
+
+        // With no other versions to come, the grants can be checked now.
+        // `load` re-runs this once the rest are in.
+        if parsed.bundle_dir.is_none() {
+            parsed.check_role_grants()?;
+            parsed.routing.check(&parsed.versions())?;
+        }
+        Ok(parsed)
     }
 
     /// Look up a role.
@@ -570,6 +726,10 @@ struct RawConfig {
     #[serde(default)]
     limits: RawLimits,
     #[serde(default)]
+    bundle: Option<RawBundle>,
+    #[serde(default)]
+    bundles: Option<RawBundles>,
+    #[serde(default)]
     http: Option<RawHttp>,
     #[serde(default)]
     auth: Option<RawAuth>,
@@ -646,6 +806,49 @@ struct RawLimits {
     idempotency_ttl_secs: Option<u64>,
 }
 
+/// The `[bundle]` header a configuration file may carry.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBundle {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    version: Option<String>,
+}
+
+/// One extra bundle version, loaded from `[bundles] dir`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBundleFile {
+    bundle: RawBundleHeader,
+    #[serde(default)]
+    action: IndexMap<String, RawAction>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBundleHeader {
+    #[serde(default)]
+    name: Option<String>,
+    version: String,
+}
+
+/// The `[bundles]` section: where other versions live and who gets them.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBundles {
+    #[serde(default)]
+    dir: Option<String>,
+    #[serde(default)]
+    default: Option<String>,
+    #[serde(default)]
+    canary_alias: Option<String>,
+    #[serde(default)]
+    canary_percent: Option<u8>,
+    #[serde(default)]
+    alias: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawHttp {
@@ -708,6 +911,8 @@ struct RawApiKey {
 struct RawRole {
     name: String,
     #[serde(default)]
+    bundle: Option<String>,
+    #[serde(default)]
     allow: Vec<String>,
     #[serde(default)]
     attributes: BTreeMap<String, Value>,
@@ -736,7 +941,12 @@ mod tests {
     fn a_minimal_file_parses() {
         let c = Config::parse(MINIMAL, Path::new(".")).unwrap();
         assert_eq!(c.server.name, "test");
-        assert_eq!(c.actions.len(), 1);
+        assert_eq!(
+            c.bundles.len(),
+            1,
+            "one version until [bundles] dir says otherwise"
+        );
+        assert_eq!(c.actions_for("1").unwrap().len(), 1);
         assert!(c.role("support").unwrap().allows("find_order"));
         assert!(!c.role("support").unwrap().allows("refund_order"));
     }

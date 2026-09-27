@@ -143,7 +143,7 @@ impl SharedState {
 #[derive(Debug)]
 pub struct Engine {
     config: Config,
-    registry: Registry,
+    registries: BTreeMap<String, Registry>,
     backend: Arc<dyn Backend>,
     schema: Schema,
     audit: AuditLog,
@@ -153,6 +153,10 @@ pub struct Engine {
 
 impl Engine {
     /// Connect the backend, validate every action and open the stores.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one linear startup: backend, schema, every bundle, then the stores"
+    )]
     pub async fn build(config: Config) -> Result<(Self, Vec<Warning>)> {
         let backend: Arc<dyn Backend> = match &config.backend {
             BackendConfig::Memory { fixtures } => Arc::new(MemoryBackend::from_file(fixtures)?),
@@ -208,7 +212,23 @@ impl Engine {
         };
 
         let schema = backend.schema().await?;
-        let (registry, warnings) = Registry::build(&config, &schema)?;
+
+        // Every loaded version is validated, not only the live one: a canary
+        // that cannot start should be found before it is promoted, not after.
+        let mut registries = BTreeMap::new();
+        let mut warnings = Vec::new();
+        for version in config.versions() {
+            let (registry, mut w) =
+                Registry::build(&config, &schema, &version).map_err(|e| match e {
+                    Error::Validation { action, problem } => Error::Validation {
+                        action: format!("{}@{version} {action}", config.bundle_name),
+                        problem,
+                    },
+                    other => other,
+                })?;
+            warnings.append(&mut w);
+            registries.insert(version, registry);
+        }
         let audit = AuditLog::open(&config.audit.path, config.audit.fsync, config.audit.rotate)?;
         let approvals = ApprovalStore::open(&config.approvals.path, config.approvals.ttl)?;
         let state = match config.limits.store {
@@ -238,7 +258,7 @@ impl Engine {
         Ok((
             Self {
                 config,
-                registry,
+                registries,
                 backend,
                 schema,
                 audit,
@@ -249,9 +269,49 @@ impl Engine {
         ))
     }
 
-    /// The published actions.
+    /// The actions in the default version.
+    ///
+    /// For tools that are not serving a caller: listing, replay, diagnostics.
     pub fn registry(&self) -> &Registry {
-        &self.registry
+        self.registries
+            .get(self.default_version())
+            .or_else(|| self.registries.values().next())
+            .expect("a deployment always has at least one bundle version")
+    }
+
+    /// The version this caller runs against.
+    pub fn version_for(&self, caller: &Caller) -> String {
+        let pinned = self
+            .config
+            .role(&caller.role)
+            .and_then(|r| r.bundle.as_deref());
+        self.config.routing.resolve(pinned, &caller.id)
+    }
+
+    /// The actions this caller can see.
+    pub fn registry_for(&self, caller: &Caller) -> &Registry {
+        let version = self.version_for(caller);
+        self.registries
+            .get(&version)
+            .unwrap_or_else(|| self.registry())
+    }
+
+    /// Every loaded version, sorted.
+    pub fn versions(&self) -> Vec<String> {
+        self.registries.keys().cloned().collect()
+    }
+
+    /// The bundle name this deployment serves.
+    pub fn bundle_name(&self) -> &str {
+        &self.config.bundle_name
+    }
+
+    fn default_version(&self) -> &str {
+        let routing = &self.config.routing;
+        routing
+            .aliases
+            .get(&routing.default)
+            .map_or(routing.default.as_str(), String::as_str)
     }
 
     /// The loaded configuration.
@@ -476,10 +536,16 @@ impl Engine {
     ) -> Result<CallResult> {
         let started = Instant::now();
         let request_id = uuid::Uuid::new_v4().to_string();
+        let version = self.version_for(caller);
+        let registry = self
+            .registries
+            .get(&version)
+            .unwrap_or_else(|| self.registry());
 
         if action_name == STATUS_ACTION {
             let answer = self.answer_status(args, caller);
-            self.record(
+            self.record_in(
+                Some(&version),
                 action_name,
                 caller,
                 args,
@@ -508,11 +574,12 @@ impl Engine {
             });
         }
 
-        let Some(action) = self.registry.get(action_name) else {
-            let names = self.registry.names();
+        let Some(action) = registry.get(action_name) else {
+            let names = registry.names();
             let hint = did_you_mean(action_name, &names)
                 .map_or_else(String::new, |s| format!("; did you mean `{s}`?"));
-            self.record(
+            self.record_in(
+                Some(&version),
                 action_name,
                 caller,
                 args,
@@ -543,7 +610,8 @@ impl Engine {
             .await
             .unwrap_or(true)
         {
-            self.record(
+            self.record_in(
+                Some(&version),
                 action_name,
                 caller,
                 args,
@@ -563,7 +631,8 @@ impl Engine {
         let values = match self.check_arguments(action, args) {
             Ok(v) => v,
             Err(e) => {
-                self.record(
+                self.record_in(
+                    Some(&version),
                     action_name,
                     caller,
                     args,
@@ -584,7 +653,8 @@ impl Engine {
                 let request = self
                     .approvals
                     .create(action_name, args.clone(), caller, &reason)?;
-                self.record(
+                self.record_in(
+                    Some(&version),
                     action_name,
                     caller,
                     args,
@@ -606,7 +676,8 @@ impl Engine {
         let idem_key = idempotency_key(action, caller, &values);
         if let Some(key) = &idem_key {
             if let Some(previous) = self.state.replay_get(key).await? {
-                self.record(
+                self.record_in(
+                    Some(&version),
                     action_name,
                     caller,
                     args,
@@ -683,7 +754,8 @@ impl Engine {
         let (rows, rows_affected) = match outcome {
             Ok(v) => v,
             Err(e) => {
-                self.record(
+                self.record_in(
+                    Some(&version),
                     action_name,
                     caller,
                     args,
@@ -723,7 +795,8 @@ impl Engine {
                 .await?;
         }
 
-        self.record(
+        self.record_in(
+            Some(&version),
             action_name,
             caller,
             args,
@@ -843,8 +916,9 @@ impl Engine {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn record(
+    fn record_in(
         &self,
+        bundle: Option<&str>,
         action: &str,
         caller: &Caller,
         args: &serde_json::Value,
@@ -869,9 +943,29 @@ impl Engine {
             error,
             approval,
             scope: caller.attributes.clone(),
+            bundle: bundle.map(ToOwned::to_owned),
             prev: String::new(),
             hash: String::new(),
         });
+    }
+
+    /// Record without a bundle, for decisions made before one is resolved.
+    #[allow(clippy::too_many_arguments)]
+    fn record(
+        &self,
+        action: &str,
+        caller: &Caller,
+        args: &serde_json::Value,
+        decision: Decision,
+        rows: u64,
+        duration: Duration,
+        error: Option<String>,
+        approval: Option<String>,
+        request_id: &str,
+    ) {
+        self.record_in(
+            None, action, caller, args, decision, rows, duration, error, approval, request_id,
+        );
     }
 
     /// Apply the action's column masks to the recorded arguments.
@@ -879,7 +973,9 @@ impl Engine {
     /// A masked column would otherwise arrive in the log in clear text as soon
     /// as someone filtered on it.
     fn mask_arguments(&self, action: &str, args: &serde_json::Value) -> serde_json::Value {
-        let Some(spec) = self.registry.get(action) else {
+        // Any version that defines the action will do: a mask is about the
+        // column, and a version that renamed it will simply not match.
+        let Some(spec) = self.registries.values().find_map(|r| r.get(action)) else {
             return args.clone();
         };
         if spec.spec.mask.is_empty() {

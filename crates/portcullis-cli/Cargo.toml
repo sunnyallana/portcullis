@@ -26,6 +26,7 @@ portcullis-engine.workspace = true
 portcullis-http.workspace = true
 portcullis-mcp.workspace = true
 clap.workspace = true
+indexmap.workspace = true
 jiff.workspace = true
 owo-colors.workspace = true
 serde_json.workspace = true

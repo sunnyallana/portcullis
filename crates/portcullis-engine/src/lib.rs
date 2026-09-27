@@ -5,6 +5,7 @@
 //! and [`Engine::call`] is the single entry point every caller goes through.
 
 pub mod approvals;
+pub mod bundles;
 pub mod config;
 pub mod engine;
 pub mod limits;
@@ -13,6 +14,7 @@ pub mod registry;
 pub mod replay;
 
 pub use approvals::{Approval, ApprovalStore, Status};
+pub use bundles::{BundleId, Canary, Routing};
 pub use config::{BackendConfig, Config, LimitStore, Limits, Role};
 pub use engine::{CallResult, Engine};
 pub use profile::{Classification, ColumnProfile, Profile, TableProfile};

@@ -113,6 +113,12 @@ enum Command {
         what: AuditCommand,
     },
 
+    /// Show the bundle versions this deployment serves and who gets them.
+    Bundles {
+        #[command(flatten)]
+        common: Common,
+    },
+
     /// Re-run recorded read calls and report what changed.
     Replay {
         /// Write the outcomes to this file as a baseline.
@@ -245,6 +251,7 @@ async fn run(cli: Cli) -> Result<ExitCode, Error> {
         Command::Approvals { what } => approvals(what).await,
         Command::Audit { what } => audit(what),
         Command::Doctor { common } => doctor(&common).await,
+        Command::Bundles { common } => bundles(&common).await,
         Command::Replay {
             record,
             against,
@@ -430,6 +437,106 @@ async fn serve(common: &Common, http: Option<&str>) -> Result<ExitCode, Error> {
     let engine = Arc::new(engine);
     portcullis_mcp::serve_stdio(Arc::clone(&engine), caller).await?;
     engine.flush_audit()?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Show the bundle versions and the routing between them.
+async fn bundles(common: &Common) -> Result<ExitCode, Error> {
+    let (engine, _) = build(common).await?;
+    let routing = &engine.config().routing;
+    let versions = engine.versions();
+
+    if common.json {
+        let rows: Vec<_> = versions
+            .iter()
+            .map(|v| {
+                let aliases: Vec<&String> = routing
+                    .aliases
+                    .iter()
+                    .filter(|(_, target)| *target == v)
+                    .map(|(alias, _)| alias)
+                    .collect();
+                serde_json::json!({
+                    "version": v,
+                    "actions": engine.config().actions_for(v).map_or(0, indexmap::IndexMap::len),
+                    "aliases": aliases,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({
+                "bundle": engine.bundle_name(),
+                "default": routing.default,
+                "canary": routing.canary.as_ref().map(|c| serde_json::json!({
+                    "alias": c.alias, "percent": c.percent
+                })),
+                "versions": rows,
+            })
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    println!("{} {}", "bundle".dimmed(), engine.bundle_name().bold());
+    for version in &versions {
+        let aliases: Vec<&str> = routing
+            .aliases
+            .iter()
+            .filter(|(_, target)| *target == version)
+            .map(|(alias, _)| alias.as_str())
+            .collect();
+        let count = engine
+            .config()
+            .actions_for(version)
+            .map_or(0, indexmap::IndexMap::len);
+        let tag = if aliases.is_empty() {
+            String::new()
+        } else {
+            format!("  {}", aliases.join(", ").green())
+        };
+        println!("  @{version}  {count} action(s){tag}");
+    }
+    println!();
+    println!("default   {}", routing.default);
+    match &routing.canary {
+        Some(canary) => println!(
+            "canary    {}% of callers to {} (sticky per caller)",
+            canary.percent, canary.alias
+        ),
+        None => println!("canary    {}", "none".dimmed()),
+    }
+
+    // Which version each role lands on. Resolving with a made-up caller id
+    // would be worse than useless: one id either is or is not in the canary
+    // slice, so every role would report whatever that single id happened to
+    // get. Print the rule instead.
+    println!();
+    let default_version = routing
+        .version_of(&routing.default)
+        .unwrap_or(&routing.default)
+        .to_owned();
+    for role in engine.config().roles.values() {
+        match role.bundle.as_deref() {
+            Some(pin) => {
+                let version = routing.version_of(pin).unwrap_or(pin);
+                println!("role {:<14} @{version}  (pinned to {pin})", role.name);
+            }
+            None => match &routing.canary {
+                Some(canary) => {
+                    let slice = routing
+                        .aliases
+                        .get(&canary.alias)
+                        .cloned()
+                        .unwrap_or_else(|| canary.alias.clone());
+                    println!(
+                        "role {:<14} @{default_version}, {}% on @{slice}  (follows the default)",
+                        role.name, canary.percent
+                    );
+                }
+                None => println!("role {:<14} @{default_version}", role.name),
+            },
+        }
+    }
     Ok(ExitCode::SUCCESS)
 }
 
