@@ -2,9 +2,9 @@
 --
 -- Mirrors examples/postgres-schema.sql so the same actions work against
 -- either engine. Used by the live integration test
--- (crates/sluice-db/tests/mysql_live.rs).
+-- (crates/portcullis-db/tests/mysql_live.rs).
 --
---     mysql -h127.0.0.1 -P33306 -uroot -p sluice < examples/mysql-schema.sql
+--     mysql -h127.0.0.1 -P33306 -uroot -p portcullis < examples/mysql-schema.sql
 --
 -- Two differences from the PostgreSQL version are worth knowing about:
 -- MySQL has no UUID type, so identifiers are CHAR(36); and there is no array
@@ -21,7 +21,7 @@ CREATE TABLE orders (
     total           DECIMAL(12, 2) NOT NULL,
     customer_email  VARCHAR(254) NOT NULL,
     card_last4      VARCHAR(32),
-    -- A type Sluice does not model: it should be left out of the schema.
+    -- A type Portcullis does not model: it should be left out of the schema.
     attachment      BLOB,
     INDEX (region, status)
 );

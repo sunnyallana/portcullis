@@ -14,17 +14,17 @@ deployment survivable.
   Keys load at startup and refresh on rotation. Only claims the operator maps
   become caller attributes.
 - **API keys**, stored as digests and compared in constant time, plus
-  `sluice apikey` to mint one.
+  `portcullis apikey` to mint one.
 - **Approval controls**: `approver_roles`, and self-approval refused by
   default.
 - **Approvals JSON API and console**, with a per-viewer `decidable` flag.
 - **MySQL backend**, including a `RETURNING` emulation that re-selects the
   written row on the same connection.
-- **`sluice profile`**: reads a database, samples rows, classifies columns
+- **`portcullis profile`**: reads a database, samples rows, classifies columns
   (Luhn-checked cards, email shapes, credential-looking names) and drafts a
   configuration with masks filled in. Reads only; no sampled value is printed
   in the clear.
-- **`sluice replay`**: re-runs recorded read calls and diffs them against a
+- **`portcullis replay`**: re-runs recorded read calls and diffs them against a
   baseline, exiting 3 on a difference. Writes are never replayed.
 - `/healthz`, `/readyz` and Prometheus `/metrics`; graceful shutdown.
 - The audit record now carries the caller's scope.
@@ -32,7 +32,7 @@ deployment survivable.
 ### Changed
 - `Engine::approve` and `Engine::deny` take a `Caller` rather than a name, so
   the approver's role is checked.
-- `sluice_sql::write` returns the resolved column values alongside the
+- `portcullis_sql::write` returns the resolved column values alongside the
   statement, which is what lets a backend without `RETURNING` find the row.
 
 ### Known limitations
@@ -55,7 +55,7 @@ First working version.
   columns, and idempotency keys so a retried call does not write twice.
 - Approval gates with a durable queue and single-claim release.
 - Per-caller, per-action rate limiting.
-- Hash-chained append-only audit log, with `sluice audit verify` detecting an
+- Hash-chained append-only audit log, with `portcullis audit verify` detecting an
   edited or deleted record.
 - PostgreSQL backend over a pooled, TLS-capable connection, verified against a
   live PostgreSQL 18 server: catalogue introspection, value binding and
@@ -63,7 +63,7 @@ First working version.
   error reporting with the SQLSTATE carried through.
 - In-memory backend for the demo and the test suite.
 - MCP server over stdio with concurrent request handling.
-- `sluice` CLI: `init`, `validate`, `doctor`, `tools`, `serve`, `call`,
+- `portcullis` CLI: `init`, `validate`, `doctor`, `tools`, `serve`, `call`,
   `approvals`, `audit`.
 
 ### Known limitations

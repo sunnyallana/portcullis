@@ -10,7 +10,7 @@ ignore = [
     # crate's private-key operations. Reviewed 2026-09-27.
     #
     # `rsa` reaches us only through jsonwebtoken's `rust_crypto` provider, and
-    # Sluice never holds an RSA private key: it verifies access tokens with
+    # Portcullis never holds an RSA private key: it verifies access tokens with
     # public keys from a JWKS. The vulnerable code path is decryption and
     # signing, neither of which runs here. The test suite does sign tokens,
     # with a throwaway key that is in the repository.

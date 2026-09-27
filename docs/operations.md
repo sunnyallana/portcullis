@@ -1,4 +1,4 @@
-# Running Sluice
+# Running Portcullis
 
 ## Pointing at PostgreSQL
 
@@ -14,16 +14,16 @@ statement_timeout_secs = 60
 TLS follows the connection string (`?sslmode=require`, `verify-full`, and so
 on); the build uses rustls, so no OpenSSL is needed on the host.
 
-Give Sluice its own database role rather than reusing an application login:
+Give Portcullis its own database role rather than reusing an application login:
 
 ```sql
-CREATE ROLE sluice LOGIN PASSWORD '…';
-GRANT USAGE ON SCHEMA public TO sluice;
-GRANT SELECT ON public.orders TO sluice;
-GRANT INSERT ON public.refunds TO sluice;
+CREATE ROLE portcullis LOGIN PASSWORD '…';
+GRANT USAGE ON SCHEMA public TO portcullis;
+GRANT SELECT ON public.orders TO portcullis;
+GRANT INSERT ON public.refunds TO portcullis;
 ```
 
-Sluice needs to read `information_schema` for its startup validation, which
+Portcullis needs to read `information_schema` for its startup validation, which
 every role can do by default.
 
 ### Checking it against a throwaway server first
@@ -32,18 +32,18 @@ every role can do by default.
 shipped actions against PostgreSQL before pointing anything at production:
 
 ```sh
-docker run -d --name sluice-pg -e POSTGRES_PASSWORD=sluice-test \
-           -e POSTGRES_DB=sluice -p 55432:5432 postgres:18
-psql "postgres://postgres:sluice-test@localhost:55432/sluice" \
+docker run -d --name portcullis-pg -e POSTGRES_PASSWORD=portcullis-test \
+           -e POSTGRES_DB=portcullis -p 55432:5432 postgres:18
+psql "postgres://postgres:portcullis-test@localhost:55432/portcullis" \
      -f examples/postgres-schema.sql
 ```
 
 Switch `[backend]` in a copy of `examples/orders.toml` to that DSN and run
-`sluice doctor`. The same container runs the backend integration tests:
+`portcullis doctor`. The same container runs the backend integration tests:
 
 ```sh
-SLUICE_TEST_DATABASE_URL="postgres://postgres:sluice-test@localhost:55432/sluice" \
-  cargo test -p sluice-db --test postgres_live
+PORTCULLIS_TEST_DATABASE_URL="postgres://postgres:portcullis-test@localhost:55432/portcullis" \
+  cargo test -p portcullis-db --test postgres_live
 ```
 
 Those tests are skipped when the variable is unset, so the ordinary
@@ -52,7 +52,7 @@ Those tests are skipped when the variable is unset, so the ordinary
 ## First run
 
 ```sh
-sluice doctor --config /etc/sluice/orders.toml
+portcullis doctor --config /etc/portcullis/orders.toml
 ```
 
 `doctor` checks the file, connects, counts visible tables, validates every
@@ -63,8 +63,8 @@ something needs attention, so it belongs in a deploy pipeline. It also flags a
 Then:
 
 ```sh
-sluice validate    # actions against the live schema
-sluice tools       # exactly what an MCP client will see
+portcullis validate    # actions against the live schema
+portcullis tools       # exactly what an MCP client will see
 ```
 
 ## Pointing at MySQL
@@ -85,19 +85,19 @@ re-selects the row on the same connection.
 Grants, as for PostgreSQL:
 
 ```sql
-CREATE USER 'sluice'@'%' IDENTIFIED BY '…';
-GRANT SELECT ON app.orders TO 'sluice'@'%';
-GRANT INSERT ON app.refunds TO 'sluice'@'%';
+CREATE USER 'portcullis'@'%' IDENTIFIED BY '…';
+GRANT SELECT ON app.orders TO 'portcullis'@'%';
+GRANT INSERT ON app.refunds TO 'portcullis'@'%';
 ```
 
 ## Serving over stdio
 
 ```sh
-sluice serve --config /etc/sluice/orders.toml --role support_eu
+portcullis serve --config /etc/portcullis/orders.toml --role support_eu
 ```
 
 stdout carries the protocol and nothing else. Logs go to stderr; set the level
-with `SLUICE_LOG` (`SLUICE_LOG=info`, or `SLUICE_LOG=sluice_engine=debug`).
+with `PORTCULLIS_LOG` (`PORTCULLIS_LOG=info`, or `PORTCULLIS_LOG=portcullis_engine=debug`).
 
 One process per role. The role fixes the caller's attributes for the lifetime
 of the process, which is what scopes every call — see
@@ -107,24 +107,24 @@ Under systemd:
 
 ```ini
 [Service]
-ExecStart=/usr/local/bin/sluice serve --config /etc/sluice/orders.toml --role support_eu
-Environment=DATABASE_URL=postgres://sluice@db/app?sslmode=verify-full
-Environment=SLUICE_LOG=info
-WorkingDirectory=/var/lib/sluice
-User=sluice
+ExecStart=/usr/local/bin/portcullis serve --config /etc/portcullis/orders.toml --role support_eu
+Environment=DATABASE_URL=postgres://portcullis@db/app?sslmode=verify-full
+Environment=PORTCULLIS_LOG=info
+WorkingDirectory=/var/lib/portcullis
+User=portcullis
 ```
 
 MCP clients launch the binary themselves, so for Claude Code:
 
 ```sh
-claude mcp add orders -- sluice serve --config /etc/sluice/orders.toml --role support_eu
+claude mcp add orders -- portcullis serve --config /etc/portcullis/orders.toml --role support_eu
 ```
 
 ## Serving over HTTP
 
 ```sh
-sluice serve --http                      # uses [http] listen
-sluice serve --http 0.0.0.0:8080         # or override it
+portcullis serve --http                      # uses [http] listen
+portcullis serve --http 0.0.0.0:8080         # or override it
 ```
 
 | Path | Auth | Purpose |
@@ -159,20 +159,20 @@ volumes.
 [auth]
 kind = "oidc"
 issuer = "https://id.example.com/"
-audience = ["sluice"]
-role_claim = "sluice_role"
+audience = ["portcullis"]
+role_claim = "portcullis_role"
 attribute_claims = { region = "region" }
 role_map = { "support-eu" = "support_eu" }
 ```
 
 Keys load at startup, so a wrong `issuer` or `jwks_url` fails the boot. Check
-it with `sluice serve --http` and watch stderr: it logs how many keys it
+it with `portcullis serve --http` and watch stderr: it logs how many keys it
 loaded.
 
 For machine callers:
 
 ```sh
-sluice apikey --role batch --caller nightly-reconcile
+portcullis apikey --role batch --caller nightly-reconcile
 ```
 
 That prints the key once and the `[[auth.key]]` block to paste. Only the digest
@@ -190,10 +190,10 @@ rather than letting the click fail.
 
 | Variable | Effect |
 |---|---|
-| `SLUICE_CONFIG` | Default `--config` path |
-| `SLUICE_ROLE` | Default `--role` |
-| `SLUICE_CALLER` | Default caller identity in the audit log |
-| `SLUICE_LOG` | Log filter (`error`, `warn`, `info`, `debug`, or per-module) |
+| `PORTCULLIS_CONFIG` | Default `--config` path |
+| `PORTCULLIS_ROLE` | Default `--role` |
+| `PORTCULLIS_CALLER` | Default caller identity in the audit log |
+| `PORTCULLIS_LOG` | Log filter (`error`, `warn`, `info`, `debug`, or per-module) |
 
 Secrets belong in `env:NAME` or `file:/path` references inside the config, not
 in the file itself.
@@ -201,24 +201,24 @@ in the file itself.
 ## The approval queue
 
 ```sh
-sluice approvals list
-sluice approvals approve apr_c31736cb8b --caller manager-jane
-sluice approvals deny    apr_c31736cb8b --caller manager-jane
+portcullis approvals list
+portcullis approvals approve apr_c31736cb8b --caller manager-jane
+portcullis approvals deny    apr_c31736cb8b --caller manager-jane
 ```
 
 Approving executes the call immediately, re-validating its arguments and
 re-checking the caller's role first. A request can be claimed once; a second
 attempt fails. Requests expire after `[approvals] ttl_secs`.
 
-The queue is a JSONL event log, so `tail -f sluice-approvals.jsonl` is a
+The queue is a JSONL event log, so `tail -f portcullis-approvals.jsonl` is a
 perfectly good pager for a small team, and piping it into Slack is a few lines
 of shell. A console is on the roadmap.
 
 ## The audit log
 
 ```sh
-sluice audit tail -n 50
-sluice audit verify
+portcullis audit tail -n 50
+portcullis audit verify
 ```
 
 `verify` exits 2 when the chain is broken and names the line. Ship the file off
@@ -241,9 +241,9 @@ underneath a running process.
 ## Proving a change did not change behaviour
 
 ```sh
-sluice replay --record before.json        # today's answers
+portcullis replay --record before.json        # today's answers
 # … edit the configuration …
-sluice replay --against before.json       # exits 3 if anything differs
+portcullis replay --against before.json       # exits 3 if anything differs
 ```
 
 Replay takes the read calls out of the audit log, de-duplicates them, and runs
@@ -269,8 +269,8 @@ at the same count, or a call that started or stopped failing.
 ## Upgrading
 
 Action definitions are validated against the live schema at every startup, so a
-schema migration that removes a column Sluice uses will fail the next start
-rather than fail a tool call. Run `sluice validate` against the new schema
+schema migration that removes a column Portcullis uses will fail the next start
+rather than fail a tool call. Run `portcullis validate` against the new schema
 before the migration goes out.
 
 ## Troubleshooting
@@ -280,10 +280,10 @@ before the migration goes out.
 | `table X does not exist` at startup | Wrong schema, or the role cannot see it. Check `[backend] schemas` and grants |
 | `X exists in more than one schema` | Qualify it: `public.orders` |
 | `row_filter needs $caller.region, but role Y does not define it` | Add the attribute to that role, or remove it from its `allow` list |
-| Every call returns no rows | The role's attributes do not match any data. Check with `sluice call --role …` |
-| `no database connection was free within the pool timeout` | Raise `max_connections`, or find the slow action with `sluice audit tail` |
+| Every call returns no rows | The role's attributes do not match any data. Check with `portcullis call --role …` |
+| `no database connection was free within the pool timeout` | Raise `max_connections`, or find the slow action with `portcullis audit tail` |
 | A column is missing from `returns` validation | Its type is not modelled (arrays, ranges and custom types on PostgreSQL; blobs and spatial types on MySQL) |
-| `401` with `WWW-Authenticate: Bearer` | No token, or one this server will not accept. `sluice_auth_failures_total` says which |
+| `401` with `WWW-Authenticate: Bearer` | No token, or one this server will not accept. `portcullis_auth_failures_total` says which |
 | `403` on every HTTP call | The token's role claim maps to nothing this deployment defines. Check `role_map` |
 | `403` when approving | `approver_roles`, or the requester trying to release their own request |
 | MySQL: "cannot return them" | The action asks for `returning` from a table with no primary key the write supplies |

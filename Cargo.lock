@@ -1758,6 +1758,122 @@ dependencies = [
 ]
 
 [[package]]
+name = "portcullis-cli"
+version = "0.2.0"
+dependencies = [
+ "clap",
+ "jiff",
+ "owo-colors",
+ "portcullis-core",
+ "portcullis-db",
+ "portcullis-engine",
+ "portcullis-http",
+ "portcullis-mcp",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "portcullis-core"
+version = "0.2.0"
+dependencies = [
+ "indexmap",
+ "jiff",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+ "toml",
+ "uuid",
+]
+
+[[package]]
+name = "portcullis-db"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "indexmap",
+ "jiff",
+ "portcullis-core",
+ "portcullis-sql",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "portcullis-engine"
+version = "0.2.0"
+dependencies = [
+ "indexmap",
+ "jiff",
+ "portcullis-core",
+ "portcullis-db",
+ "portcullis-sql",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+ "toml",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "portcullis-http"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "http",
+ "http-body-util",
+ "jiff",
+ "jsonwebtoken",
+ "portcullis-core",
+ "portcullis-engine",
+ "portcullis-mcp",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+ "tower",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "portcullis-mcp"
+version = "0.2.0"
+dependencies = [
+ "portcullis-core",
+ "portcullis-engine",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "portcullis-sql"
+version = "0.2.0"
+dependencies = [
+ "indexmap",
+ "jiff",
+ "portcullis-core",
+ "rust_decimal",
+ "uuid",
+]
+
+[[package]]
 name = "potential_utf"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2440,122 +2556,6 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
-
-[[package]]
-name = "sluice-cli"
-version = "0.2.0"
-dependencies = [
- "clap",
- "jiff",
- "owo-colors",
- "serde_json",
- "sluice-core",
- "sluice-db",
- "sluice-engine",
- "sluice-http",
- "sluice-mcp",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "sluice-core"
-version = "0.2.0"
-dependencies = [
- "indexmap",
- "jiff",
- "rust_decimal",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.21",
- "toml",
- "uuid",
-]
-
-[[package]]
-name = "sluice-db"
-version = "0.2.0"
-dependencies = [
- "async-trait",
- "chrono",
- "indexmap",
- "jiff",
- "rust_decimal",
- "serde",
- "serde_json",
- "sluice-core",
- "sluice-sql",
- "sqlx",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "sluice-engine"
-version = "0.2.0"
-dependencies = [
- "indexmap",
- "jiff",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "sluice-core",
- "sluice-db",
- "sluice-sql",
- "tokio",
- "toml",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "sluice-http"
-version = "0.2.0"
-dependencies = [
- "async-trait",
- "axum",
- "http",
- "http-body-util",
- "jiff",
- "jsonwebtoken",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "sluice-core",
- "sluice-engine",
- "sluice-mcp",
- "tokio",
- "tower",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "sluice-mcp"
-version = "0.2.0"
-dependencies = [
- "serde",
- "serde_json",
- "sluice-core",
- "sluice-engine",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "sluice-sql"
-version = "0.2.0"
-dependencies = [
- "indexmap",
- "jiff",
- "rust_decimal",
- "sluice-core",
- "uuid",
-]
 
 [[package]]
 name = "smallvec"

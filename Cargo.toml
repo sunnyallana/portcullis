@@ -1,13 +1,13 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/sluice-core",
-    "crates/sluice-sql",
-    "crates/sluice-db",
-    "crates/sluice-engine",
-    "crates/sluice-mcp",
-    "crates/sluice-http",
-    "crates/sluice-cli",
+    "crates/portcullis-core",
+    "crates/portcullis-sql",
+    "crates/portcullis-db",
+    "crates/portcullis-engine",
+    "crates/portcullis-mcp",
+    "crates/portcullis-http",
+    "crates/portcullis-cli",
 ]
 
 [workspace.package]
@@ -18,12 +18,12 @@ license = "UNLICENSED"
 publish = false
 
 [workspace.dependencies]
-sluice-core = { path = "crates/sluice-core", version = "0.2.0" }
-sluice-sql = { path = "crates/sluice-sql", version = "0.2.0" }
-sluice-db = { path = "crates/sluice-db", version = "0.2.0", default-features = false }
-sluice-engine = { path = "crates/sluice-engine", version = "0.2.0" }
-sluice-mcp = { path = "crates/sluice-mcp", version = "0.2.0" }
-sluice-http = { path = "crates/sluice-http", version = "0.2.0" }
+portcullis-core = { path = "crates/portcullis-core", version = "0.2.0" }
+portcullis-sql = { path = "crates/portcullis-sql", version = "0.2.0" }
+portcullis-db = { path = "crates/portcullis-db", version = "0.2.0", default-features = false }
+portcullis-engine = { path = "crates/portcullis-engine", version = "0.2.0" }
+portcullis-mcp = { path = "crates/portcullis-mcp", version = "0.2.0" }
+portcullis-http = { path = "crates/portcullis-http", version = "0.2.0" }
 
 async-trait = "0.1"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query"] }
@@ -43,7 +43,7 @@ rust_decimal = { version = "1.43", features = ["serde-with-str"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 sha2 = "0.11"
-# The driver features come from sluice-db's own `postgres` / `mysql` features.
+# The driver features come from portcullis-db's own `postgres` / `mysql` features.
 sqlx = { version = "0.9", default-features = false, features = [
     "runtime-tokio", "tls-rustls-ring", "macros",
     "chrono", "uuid", "rust_decimal", "json",

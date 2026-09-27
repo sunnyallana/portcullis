@@ -36,7 +36,7 @@ statement_timeout_secs = 60
 | `statement_timeout_secs` | postgres, mysql | Server-side backstop on every connection |
 | `fixtures` | memory | Path to a JSON fixture (demo and tests only) |
 
-Columns whose type Sluice does not model are left out of the schema: arrays,
+Columns whose type Portcullis does not model are left out of the schema: arrays,
 ranges, `tsvector` and custom types on PostgreSQL; blobs, spatial and bit types
 on MySQL. An action that names one fails validation rather than returning a
 mis-decoded value.
@@ -52,16 +52,16 @@ saying so.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `path` | `sluice-audit.jsonl` | Where the log is written |
+| `path` | `portcullis-audit.jsonl` | Where the log is written |
 | `fsync` | `batch` | `always` (fsync per record), `batch` (flush per record, fsync at shutdown), `never` (tests only) |
 
 ## `[approvals]`
 
 | Key | Default | Meaning |
 |---|---|---|
-| `path` | `sluice-approvals.jsonl` | Durable queue of parked calls |
+| `path` | `portcullis-approvals.jsonl` | Durable queue of parked calls |
 | `ttl_secs` | `604800` | How long a request can wait before it expires |
-| `approver_roles` | `[]` | Roles allowed to release a parked call. Empty means any role, which `sluice doctor` warns about when HTTP is enabled |
+| `approver_roles` | `[]` | Roles allowed to release a parked call. Empty means any role, which `portcullis doctor` warns about when HTTP is enabled |
 | `allow_self_approval` | `false` | Whether the caller who raised a request may decide it |
 
 ## `[limits]`
@@ -74,7 +74,7 @@ saying so.
 
 ## `[http]`
 
-Present only when the deployment serves HTTP. `sluice serve --http` uses it.
+Present only when the deployment serves HTTP. `portcullis serve --http` uses it.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -95,9 +95,9 @@ takes its role from `--role`.
 [auth]
 kind = "oidc"
 issuer = "https://id.example.com/"
-audience = ["sluice"]
+audience = ["portcullis"]
 jwks_url = "https://id.example.com/.well-known/jwks.json"   # discovered from the issuer when absent
-role_claim = "sluice_role"
+role_claim = "portcullis_role"
 caller_claim = "sub"
 attribute_claims = { region = "region", tenant = "tid" }
 role_map = { "support-eu" = "support_eu" }
@@ -123,7 +123,7 @@ re-fetched when they go stale or a token arrives with an unknown `kid`.
 kind = "api_key"
 
 [[auth.key]]
-hash = "…64 hex characters…"    # mint with `sluice apikey --role batch`
+hash = "…64 hex characters…"    # mint with `portcullis apikey --role batch`
 role = "batch"
 caller = "nightly-reconcile"
 attributes = { region = "EU" }

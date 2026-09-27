@@ -1,6 +1,6 @@
 # Security model
 
-What Sluice promises, how it is enforced, and — just as important — what it
+What Portcullis promises, how it is enforced, and — just as important — what it
 does not cover. Read the last section before deploying anything.
 
 ## Threat model
@@ -9,9 +9,9 @@ The adversary assumed throughout is **the model itself, behaving badly**:
 hallucinating, being prompt-injected through data it reads, looping, or being
 driven by a user who wants to see someone else's rows. It is not assumed to be
 malicious in the sense of running code on the host — if an attacker controls
-the machine Sluice runs on, they control Sluice.
+the machine Portcullis runs on, they control Portcullis.
 
-Concretely, Sluice is built against these:
+Concretely, Portcullis is built against these:
 
 | Threat | Control |
 |---|---|
@@ -32,7 +32,7 @@ There are three separate barriers, and all three would have to fail.
 
 1. **The grammar.** The predicate language cannot express a function call, a
    subquery, a second table, a semicolon or a comment. The lexer rejects those
-   characters outright. See `sluice-sql/src/expr.rs`.
+   characters outright. See `portcullis-sql/src/expr.rs`.
 2. **Where names come from.** Table and column names in a statement come from
    the live schema read at startup, never from a request. `Dialect::quote`
    re-checks each identifier against `[A-Za-z0-9_]` immediately before it goes
@@ -71,7 +71,7 @@ not "access denied". Denial leaks the existence of the row.
 
 Two transports, two models.
 
-**stdio** has one identity per process. `sluice serve --role support_eu` fixes
+**stdio** has one identity per process. `portcullis serve --role support_eu` fixes
 the role and every call runs as it. That is honest for stdio, where the client
 is a local process the operator launched, and one process per role is the
 pattern.
@@ -106,7 +106,7 @@ entirely and the server refuses to bind anything but loopback in that state.
 Two controls, both off the critical path of an ordinary call.
 
 `approver_roles` limits who may release a parked call. Leaving it empty means
-any role can, which `sluice doctor` warns about once HTTP is enabled.
+any role can, which `portcullis doctor` warns about once HTTP is enabled.
 
 Self-approval is refused by default: the caller who raised a request may not
 decide it. A gate the requester can open is decoration, and the common failure
@@ -120,7 +120,7 @@ write.
 ## The audit log
 
 Line-delimited JSON, append-only, each record carrying the digest of the one
-before it. `sluice audit verify` replays the chain and reports the first line
+before it. `portcullis audit verify` replays the chain and reports the first line
 where it breaks, so an edited or deleted record is detectable. The head digest
 is printed; recording it elsewhere — a log shipper, a WORM bucket, a weekly
 email — is what turns detection into proof, because someone who can rewrite the
@@ -140,8 +140,8 @@ not an acceptable answer.
 recorded in `deny.toml`, with its reasoning, and it is worth knowing about:
 
 **RUSTSEC-2023-0071**, the Marvin attack on the `rsa` crate, has no fixed
-version. It reaches Sluice only through `jsonwebtoken`'s pure-Rust provider,
-and it concerns timing side channels in **private-key** operations. Sluice
+version. It reaches Portcullis only through `jsonwebtoken`'s pure-Rust provider,
+and it concerns timing side channels in **private-key** operations. Portcullis
 holds no RSA private key: it verifies access tokens against public keys from a
 JWKS. If you would rather not depend on that reasoning, configure your identity
 provider to sign with EC keys (ES256), which do not enter the `rsa` code path
@@ -150,12 +150,12 @@ at all.
 ## What this does not do
 
 - **It is not a database firewall.** Anything else with the same credentials can
-  still do anything. Give Sluice its own database role with only the grants its
+  still do anything. Give Portcullis its own database role with only the grants its
   actions need — that is the belt to this brace.
 - **It does not stop a user who legitimately has access from misusing it.** It
   bounds and records what happens; it does not judge intent.
 - **It does not sanitise what the model reads.** If a row contains an injection
-  payload and your agent acts on it, Sluice's protection is that the action set
+  payload and your agent acts on it, Portcullis's protection is that the action set
   is small and writes are gated. That is a real reduction, not immunity.
 - **It does not encrypt anything at rest.** Audit and approval files sit on disk
   in plain text. Put them on an encrypted volume; they contain masked arguments,
@@ -174,12 +174,12 @@ at all.
 - Set `mask_salt` to something from a secret store, not the example value.
 - Keep `fsync = "always"` where the audit trail is evidence.
 - Ship the audit log off the host; keep the head digest somewhere separate.
-- Run `sluice doctor` in your deploy pipeline. It fails the pipeline on a
+- Run `portcullis doctor` in your deploy pipeline. It fails the pipeline on a
   broken chain, an unreachable backend or a leftover example salt.
 - Prefer HTTP with OIDC for anything shared; keep stdio for locally launched
   clients.
 - Set `approver_roles`, and leave self-approval off.
 - Terminate TLS in front of the process, and keep `/metrics` off the public
   interface.
-- Record what reads return with `sluice replay --record` before a configuration
+- Record what reads return with `portcullis replay --record` before a configuration
   change, and compare after.

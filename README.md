@@ -1,8 +1,8 @@
-# Sluice
+# Portcullis
 
 A governed data-action layer for AI agents.
 
-Sluice sits between an agent and a database and publishes a fixed set of typed,
+Portcullis sits between an agent and a database and publishes a fixed set of typed,
 permissioned **actions** over MCP. The agent chooses an action and fills in its
 declared parameters. It never writes SQL, never names a table, never sees a
 credential, and never reaches a row outside its scope. Every call — allowed,
@@ -13,7 +13,7 @@ refused or parked for approval — lands in a hash-chained audit log.
         │  MCP over stdio, or HTTP with a bearer token
         ▼
   ┌──────────────────────────────┐
-  │  sluice                      │
+  │  portcullis                      │
   │   · declared actions         │  ← one TOML file, validated at startup
   │   · identity per request     │  ← OIDC claims or API keys
   │   · row filters + masking    │
@@ -33,24 +33,24 @@ The two things you can do today are both bad. An `execute_sql` MCP server gives
 a model the whole database and no security team will sign it off. Hand-written
 per-system REST glue is safe and takes a quarter per system.
 
-Sluice is the third option: declare what the agent may do, in a file, checked
+Portcullis is the third option: declare what the agent may do, in a file, checked
 against the live schema before anything is published.
 
 ## Try it without a database
 
 ```sh
 cargo build --release
-./target/release/sluice init ./demo
+./target/release/portcullis init ./demo
 cd demo
 
-sluice validate
-sluice call --action find_order --arg order_no=8812 --role support_eu --caller alice
-sluice call --action find_order --arg order_no=8812 --role support_us --caller bob   # no rows: wrong region
-sluice call --action refund_order --arg order_no=8812 --arg amount=1200.00 \
+portcullis validate
+portcullis call --action find_order --arg order_no=8812 --role support_eu --caller alice
+portcullis call --action find_order --arg order_no=8812 --role support_us --caller bob   # no rows: wrong region
+portcullis call --action refund_order --arg order_no=8812 --arg amount=1200.00 \
             --arg reason="lost parcel" --role support_eu --caller alice              # parked for approval
-sluice approvals list
-sluice approvals approve <id> --role support_eu --caller manager-jane
-sluice audit verify
+portcullis approvals list
+portcullis approvals approve <id> --role support_eu --caller manager-jane
+portcullis audit verify
 ```
 
 The demo runs on an in-memory fixture, so there is nothing to install. Point
@@ -59,14 +59,14 @@ The demo runs on an in-memory fixture, so there is nothing to install. Point
 ## Point it at a database you already have
 
 ```sh
-sluice profile --dsn "env:DATABASE_URL" --out draft.toml
+portcullis profile --dsn "env:DATABASE_URL" --out draft.toml
 ```
 
 That reads the catalogue, samples rows, guesses what each column holds —
 Luhn-checked card numbers, email shapes, credential-looking names — and writes
 a draft configuration with masks filled in and a row filter suggested wherever
 a tenant or region column was spotted. Reads only, and no sampled value is
-printed in the clear. Edit it down, then `sluice validate`.
+printed in the clear. Edit it down, then `portcullis validate`.
 
 ## What an action looks like
 
@@ -108,7 +108,7 @@ Full reference: [docs/action-format.md](docs/action-format.md).
 **stdio**, for a client that launches the process itself:
 
 ```sh
-claude mcp add orders -- sluice serve --config /etc/sluice/orders.toml --role support_eu
+claude mcp add orders -- portcullis serve --config /etc/portcullis/orders.toml --role support_eu
 ```
 
 **HTTP**, when many people share one deployment and each needs their own scope:
@@ -120,19 +120,19 @@ listen = "127.0.0.1:8080"
 [auth]
 kind = "oidc"
 issuer = "https://id.example.com/"
-audience = ["sluice"]
-role_claim = "sluice_role"
+audience = ["portcullis"]
+role_claim = "portcullis_role"
 attribute_claims = { region = "region" }
 ```
 
 ```sh
-sluice serve --http
+portcullis serve --http
 ```
 
 The caller's token decides their role and their scope, per request. Only claims
 the operator maps become attributes, so an identity provider that starts
 emitting a new claim cannot silently widen anyone's access. API keys
-(`sluice apikey --role batch`) cover machine callers. `kind = "none"` exists for
+(`portcullis apikey --role batch`) cover machine callers. `kind = "none"` exists for
 local development and refuses to bind anything but loopback.
 
 The same process serves a small approvals console at `/`, a JSON approvals API,
@@ -142,17 +142,17 @@ The same process serves a small approvals console at `/`, a JSON approvals API,
 
 | Command | What it does |
 |---|---|
-| `sluice init [dir]` | Write a starter config and demo data |
-| `sluice profile` | Read a database and draft a configuration for it |
-| `sluice validate` | Check every action against the live schema |
-| `sluice doctor` | Config, connectivity, schema, actions and audit in one pass |
-| `sluice tools` | Show what an MCP client would see |
-| `sluice serve [--http]` | Serve MCP on stdio, or over HTTP |
-| `sluice call` | Invoke one action from the shell, as a role |
-| `sluice approvals list \| approve \| deny` | Work the approval queue |
-| `sluice replay [--record \| --against]` | Re-run recorded reads and diff them |
-| `sluice audit verify \| tail` | Check the chain, read recent decisions |
-| `sluice apikey --role R` | Mint a key and print the config to paste |
+| `portcullis init [dir]` | Write a starter config and demo data |
+| `portcullis profile` | Read a database and draft a configuration for it |
+| `portcullis validate` | Check every action against the live schema |
+| `portcullis doctor` | Config, connectivity, schema, actions and audit in one pass |
+| `portcullis tools` | Show what an MCP client would see |
+| `portcullis serve [--http]` | Serve MCP on stdio, or over HTTP |
+| `portcullis call` | Invoke one action from the shell, as a role |
+| `portcullis approvals list \| approve \| deny` | Work the approval queue |
+| `portcullis replay [--record \| --against]` | Re-run recorded reads and diff them |
+| `portcullis audit verify \| tail` | Check the chain, read recent decisions |
+| `portcullis apikey --role R` | Mint a key and print the config to paste |
 
 Add `--json` to any of them for machine-readable output. Logs go to stderr;
 `serve` owns stdout.
@@ -174,8 +174,8 @@ Add `--json` to any of them for machine-readable output. Logs go to stderr;
 - **An approval gate the requester can open is not a gate.** Self-approval is
   refused by default, and `approver_roles` restricts who may release anything.
 - **Nothing happens off the record.** Refusals and parked calls are audited too,
-  and `sluice audit verify` detects an edited or deleted line.
-- **You can prove a change did not change behaviour.** `sluice replay --record`
+  and `portcullis audit verify` detects an edited or deleted line.
+- **You can prove a change did not change behaviour.** `portcullis replay --record`
   captures what reads return today; `--against` re-runs them later and exits 3
   if anything differs.
 
@@ -198,7 +198,7 @@ the test suite; it is not a database and refuses to pretend otherwise.
 Rust 1.85 or newer (edition 2024).
 
 ```sh
-cargo build --release          # ./target/release/sluice
+cargo build --release          # ./target/release/portcullis
 cargo test --workspace         # needs nothing installed
 cargo clippy --workspace --all-targets
 ```
@@ -207,17 +207,17 @@ The database backends have integration tests that run against real servers and
 skip unless one is configured:
 
 ```sh
-docker run -d --name sluice-pg -e POSTGRES_PASSWORD=sluice-test \
-           -e POSTGRES_DB=sluice -p 55432:5432 postgres:18
-psql "postgres://postgres:sluice-test@localhost:55432/sluice" -f examples/postgres-schema.sql
-SLUICE_TEST_DATABASE_URL="postgres://postgres:sluice-test@localhost:55432/sluice" \
-     cargo test -p sluice-db --test postgres_live
+docker run -d --name portcullis-pg -e POSTGRES_PASSWORD=portcullis-test \
+           -e POSTGRES_DB=portcullis -p 55432:5432 postgres:18
+psql "postgres://postgres:portcullis-test@localhost:55432/portcullis" -f examples/postgres-schema.sql
+PORTCULLIS_TEST_DATABASE_URL="postgres://postgres:portcullis-test@localhost:55432/portcullis" \
+     cargo test -p portcullis-db --test postgres_live
 
-docker run -d --name sluice-mysql -e MYSQL_ROOT_PASSWORD=sluice-test \
-           -e MYSQL_DATABASE=sluice -p 33306:3306 mysql:9
-mysql -h127.0.0.1 -P33306 -uroot -psluice-test sluice < examples/mysql-schema.sql
-SLUICE_TEST_MYSQL_URL="mysql://root:sluice-test@localhost:33306/sluice" \
-     cargo test -p sluice-db --features mysql --test mysql_live
+docker run -d --name portcullis-mysql -e MYSQL_ROOT_PASSWORD=portcullis-test \
+           -e MYSQL_DATABASE=portcullis -p 33306:3306 mysql:9
+mysql -h127.0.0.1 -P33306 -uroot -pportcullis-test portcullis < examples/mysql-schema.sql
+PORTCULLIS_TEST_MYSQL_URL="mysql://root:portcullis-test@localhost:33306/portcullis" \
+     cargo test -p portcullis-db --features mysql --test mysql_live
 ```
 
 On Windows, the default MSVC toolchain needs two Visual Studio components for
@@ -239,13 +239,13 @@ Build from PowerShell rather than Git Bash: Git for Windows ships its own
 
 | Crate | Contents |
 |---|---|
-| `sluice-core` | Values, schema, action specs, masking, audit chain |
-| `sluice-sql` | Predicate language, parameterised statement builder, dialects |
-| `sluice-db` | Backend trait, pooled PostgreSQL and MySQL, in-memory fixture |
-| `sluice-engine` | Config, validation, policy, request path, profiler, replay |
-| `sluice-mcp` | MCP protocol and the stdio transport |
-| `sluice-http` | HTTP transport, OIDC and API keys, approvals API, console |
-| `sluice-cli` | The `sluice` binary |
+| `portcullis-core` | Values, schema, action specs, masking, audit chain |
+| `portcullis-sql` | Predicate language, parameterised statement builder, dialects |
+| `portcullis-db` | Backend trait, pooled PostgreSQL and MySQL, in-memory fixture |
+| `portcullis-engine` | Config, validation, policy, request path, profiler, replay |
+| `portcullis-mcp` | MCP protocol and the stdio transport |
+| `portcullis-http` | HTTP transport, OIDC and API keys, approvals API, console |
+| `portcullis-cli` | The `portcullis` binary |
 
 ## Licence
 

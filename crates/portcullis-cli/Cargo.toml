@@ -1,0 +1,35 @@
+[package]
+name = "portcullis-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The portcullis command line."
+
+[[bin]]
+name = "portcullis"
+path = "src/main.rs"
+
+[features]
+default = ["postgres", "mysql"]
+postgres = ["portcullis-engine/postgres"]
+mysql = ["portcullis-engine/mysql"]
+
+[lints]
+workspace = true
+
+[dependencies]
+portcullis-core.workspace = true
+portcullis-db.workspace = true
+portcullis-engine.workspace = true
+portcullis-http.workspace = true
+portcullis-mcp.workspace = true
+clap.workspace = true
+jiff.workspace = true
+owo-colors.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true }
+uuid.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

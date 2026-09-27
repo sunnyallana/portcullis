@@ -1,0 +1,18 @@
+[package]
+name = "portcullis-sql"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Portcullis predicate language and parameterised statement builder."
+
+[lints]
+workspace = true
+
+[dependencies]
+portcullis-core.workspace = true
+indexmap.workspace = true
+jiff.workspace = true
+rust_decimal.workspace = true
+uuid.workspace = true

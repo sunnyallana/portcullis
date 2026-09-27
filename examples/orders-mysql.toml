@@ -1,10 +1,10 @@
-# A worked Sluice deployment: order lookup and refunds for a support team.
+# A worked Portcullis deployment: order lookup and refunds for a support team.
 #
 # The MySQL flavour of examples/orders.toml. Load examples/mysql-schema.sql
 # first, then:
-#     sluice validate --config examples/orders.toml
-#     sluice call --config examples/orders.toml --action find_order --arg order_no=8812
-#     sluice serve --config examples/orders.toml
+#     portcullis validate --config examples/orders.toml
+#     portcullis call --config examples/orders.toml --action find_order --arg order_no=8812
+#     portcullis serve --config examples/orders.toml
 #
 # Swap [backend] for the postgres block at the bottom to point it at a real
 # database. Nothing else in this file changes.
@@ -12,7 +12,7 @@
 [server]
 name = "orders"
 # Salt for `hash` masking. Keep it stable; changing it changes every digest.
-mask_salt = "env:SLUICE_MASK_SALT"
+mask_salt = "env:PORTCULLIS_MASK_SALT"
 
 [backend]
 kind = "mysql"
@@ -20,11 +20,11 @@ dsn = "env:MYSQL_URL"
 max_connections = 5
 
 [audit]
-path = "sluice-audit.jsonl"
+path = "portcullis-audit.jsonl"
 fsync = "batch"
 
 [approvals]
-path = "sluice-approvals.jsonl"
+path = "portcullis-approvals.jsonl"
 ttl_secs = 604800   # a week
 
 [limits]

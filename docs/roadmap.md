@@ -19,8 +19,8 @@ What exists, what is next, and why in that order. Dated 2026-09-27.
 - MCP over stdio and over HTTP, sharing one dispatch
 - OIDC and API-key authentication, with identity resolved per request
 - Approvals JSON API and a small console; `/healthz`, `/readyz`, `/metrics`
-- `sluice profile`: read a database, classify columns, draft a configuration
-- `sluice replay`: re-run recorded reads and diff against a baseline
+- `portcullis profile`: read a database, classify columns, draft a configuration
+- `portcullis replay`: re-run recorded reads and diff against a baseline
 - `init`, `validate`, `doctor`, `tools`, `call`, `serve`, `approvals`, `audit`,
   `apikey`
 
@@ -31,7 +31,7 @@ a configuration change is a file edit and a restart, which is fine for one
 deployment and awkward for a fleet: there is no way to canary `orders@v4`
 against ten percent of traffic, and no way to roll back without another edit.
 The shape is a named, versioned set of actions with aliases, resolved per
-request, with the registry keyed by version. `sluice replay` already provides
+request, with the registry keyed by version. `portcullis replay` already provides
 the safety net this would promote against; it is the promotion mechanism that
 is missing.
 
@@ -57,7 +57,7 @@ everything above is solid.
 - **Free-form SQL with a policy check.** Parsing arbitrary SQL and deciding
   whether it is safe is a much harder problem than declaring what is allowed,
   and the failure mode is silent.
-- **Its own identity provider.** Sluice should consume identity, never own it.
+- **Its own identity provider.** Portcullis should consume identity, never own it.
 - **Response caching.** Stale data in an agent's context is worse than a slow
   query.
 - **Replaying writes.** Asked for more than once. Re-running a refund to see

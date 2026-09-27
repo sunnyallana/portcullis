@@ -40,22 +40,22 @@ jobs:
       - name: The demo still runs
         shell: bash
         run: |
-          cargo run --quiet --bin sluice -- init ./ci-demo
-          cargo run --quiet --bin sluice -- validate --config ./ci-demo/sluice.toml
-          cargo run --quiet --bin sluice -- call --config ./ci-demo/sluice.toml --action find_order --arg order_no=8812 --role support_eu --caller ci --json
-          cargo run --quiet --bin sluice -- audit verify --config ./ci-demo/sluice.toml
+          cargo run --quiet --bin portcullis -- init ./ci-demo
+          cargo run --quiet --bin portcullis -- validate --config ./ci-demo/portcullis.toml
+          cargo run --quiet --bin portcullis -- call --config ./ci-demo/portcullis.toml --action find_order --arg order_no=8812 --role support_eu --caller ci --json
+          cargo run --quiet --bin portcullis -- audit verify --config ./ci-demo/portcullis.toml
 
   postgres:
     name: live PostgreSQL
     runs-on: ubuntu-latest
     env:
-      DATABASE_URL: postgres://postgres:sluice-test@localhost:5432/sluice
+      DATABASE_URL: postgres://postgres:portcullis-test@localhost:5432/portcullis
     services:
       postgres:
         image: postgres:18
         env:
-          POSTGRES_PASSWORD: sluice-test
-          POSTGRES_DB: sluice
+          POSTGRES_PASSWORD: portcullis-test
+          POSTGRES_DB: portcullis
         ports: ['5432:5432']
         options: >-
           --health-cmd "pg_isready -U postgres"
@@ -71,9 +71,9 @@ jobs:
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f examples/postgres-schema.sql
 
       - name: Backend integration tests
-        run: cargo test -p sluice-db --test postgres_live
+        run: cargo test -p portcullis-db --test postgres_live
         env:
-          SLUICE_TEST_DATABASE_URL: ${{ env.DATABASE_URL }}
+          PORTCULLIS_TEST_DATABASE_URL: ${{ env.DATABASE_URL }}
 
       - name: The same actions, end to end
         run: |
@@ -86,24 +86,24 @@ jobs:
           src = src.replace('mask_salt = "change-me-in-production"', 'mask_salt = "ci"')
           Path("/tmp/orders-pg.toml").write_text(src)
           EOF
-          cargo run --quiet --bin sluice -- doctor --config /tmp/orders-pg.toml
-          cargo run --quiet --bin sluice -- call --config /tmp/orders-pg.toml --action find_order --arg order_no=8812 --role support_eu --caller ci --json
-          cargo run --quiet --bin sluice -- audit verify --config /tmp/orders-pg.toml
+          cargo run --quiet --bin portcullis -- doctor --config /tmp/orders-pg.toml
+          cargo run --quiet --bin portcullis -- call --config /tmp/orders-pg.toml --action find_order --arg order_no=8812 --role support_eu --caller ci --json
+          cargo run --quiet --bin portcullis -- audit verify --config /tmp/orders-pg.toml
 
   mysql:
     name: live MySQL
     runs-on: ubuntu-latest
     env:
-      MYSQL_URL: mysql://root:sluice-test@127.0.0.1:3306/sluice
+      MYSQL_URL: mysql://root:portcullis-test@127.0.0.1:3306/portcullis
     services:
       mysql:
         image: mysql:9
         env:
-          MYSQL_ROOT_PASSWORD: sluice-test
-          MYSQL_DATABASE: sluice
+          MYSQL_ROOT_PASSWORD: portcullis-test
+          MYSQL_DATABASE: portcullis
         ports: ['3306:3306']
         options: >-
-          --health-cmd "mysqladmin ping -uroot -psluice-test --silent"
+          --health-cmd "mysqladmin ping -uroot -pportcullis-test --silent"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
@@ -113,20 +113,20 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Load the demo schema
-        run: mysql -h127.0.0.1 -P3306 -uroot -psluice-test sluice < examples/mysql-schema.sql
+        run: mysql -h127.0.0.1 -P3306 -uroot -pportcullis-test portcullis < examples/mysql-schema.sql
 
       - name: Backend integration tests
-        run: cargo test -p sluice-db --features mysql --test mysql_live
+        run: cargo test -p portcullis-db --features mysql --test mysql_live
         env:
-          SLUICE_TEST_MYSQL_URL: ${{ env.MYSQL_URL }}
+          PORTCULLIS_TEST_MYSQL_URL: ${{ env.MYSQL_URL }}
 
       - name: The same actions, end to end
         env:
-          SLUICE_MASK_SALT: ci
+          PORTCULLIS_MASK_SALT: ci
         run: |
-          cargo run --quiet --bin sluice -- doctor --config examples/orders-mysql.toml
-          cargo run --quiet --bin sluice -- call --config examples/orders-mysql.toml --action find_order --arg order_no=8812 --role support_eu --caller ci --json
-          cargo run --quiet --bin sluice -- audit verify --config examples/orders-mysql.toml
+          cargo run --quiet --bin portcullis -- doctor --config examples/orders-mysql.toml
+          cargo run --quiet --bin portcullis -- call --config examples/orders-mysql.toml --action find_order --arg order_no=8812 --role support_eu --caller ci --json
+          cargo run --quiet --bin portcullis -- audit verify --config examples/orders-mysql.toml
 
   audit:
     name: dependency audit

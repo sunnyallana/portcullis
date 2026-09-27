@@ -1,0 +1,34 @@
+[package]
+name = "portcullis-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Portcullis engine: configuration, action validation, policy and the request path."
+
+[features]
+default = ["postgres"]
+postgres = ["portcullis-db/postgres"]
+mysql = ["portcullis-db/mysql"]
+
+[lints]
+workspace = true
+
+[dependencies]
+portcullis-core.workspace = true
+portcullis-db.workspace = true
+portcullis-sql.workspace = true
+indexmap.workspace = true
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+toml.workspace = true
+tokio = { workspace = true }
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+uuid.workspace = true

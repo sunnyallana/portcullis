@@ -2,7 +2,7 @@
 --
 -- Mirrors examples/demo-data.json so the same examples/orders.toml works
 -- against a real server once [backend] is switched to postgres. Also used by
--- the live integration test (crates/sluice-db/tests/postgres_live.rs).
+-- the live integration test (crates/portcullis-db/tests/postgres_live.rs).
 --
 --     psql "$DATABASE_URL" -f examples/postgres-schema.sql
 
@@ -17,7 +17,7 @@ CREATE TABLE orders (
     total           numeric(12, 2) NOT NULL,
     customer_email  text NOT NULL,
     card_last4      text,
-    -- Deliberately a type Sluice does not model. It should be dropped from the
+    -- Deliberately a type Portcullis does not model. It should be dropped from the
     -- schema rather than guessed at, and any action naming it should fail
     -- validation at startup.
     tags            text[]
@@ -31,7 +31,7 @@ CREATE TABLE refunds (
     reason      text NOT NULL,
     issued_by   text NOT NULL,
     issued_at   timestamptz NOT NULL,
-    -- A database-generated column: Sluice should mark it generated and warn if
+    -- A database-generated column: Portcullis should mark it generated and warn if
     -- an action tries to set it.
     seq         bigint GENERATED ALWAYS AS IDENTITY
 );
